@@ -224,6 +224,7 @@ def process_directory(
     dry_run: bool = False,
     recursive: bool = True,
     verbose: bool = False,
+    language: str = 'en',
 ) -> Tuple[int, int]:
     """Scan *directory* and rename all video files.
 
@@ -254,7 +255,7 @@ def process_directory(
         if verbose and rel != os.path.basename(fpath):
             print(f'\n[{rel}]')
 
-        new_name, meta = generate_new_name(fpath, known_title, pattern, tmdb_key, season_number)
+        new_name, meta = generate_new_name(fpath, known_title, pattern, tmdb_key, season_number, language)
         results.append((fpath, new_name, meta))
 
     # ── Second pass: perform renames, warn on skips ────────────────────

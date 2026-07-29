@@ -100,14 +100,14 @@ def _tmdb_get(endpoint: str, api_key: str, params: dict = None) -> Optional[dict
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
-def get_tv_show_id(show_name: str, api_key: str = '') -> Optional[int]:
+def get_tv_show_id(show_name: str, api_key: str = '', language: str = 'en') -> Optional[int]:
     """Get TMDB TV show ID by name. Returns None if not found."""
     key = _resolve_key(api_key)
     if not key:
         return None
     clean = re.sub(r'\b(?:19|20)\d{2}\b', '', show_name).strip()
     clean = re.sub(r'\s+', ' ', clean).strip() or show_name
-    data = _tmdb_get('search/tv', key, {'query': clean})
+    data = _tmdb_get('search/tv', key, {'query': clean, 'language': language})
     if data and data.get('results'):
         return data['results'][0].get('id')
     return None
@@ -117,6 +117,7 @@ def get_season_episode_titles(
     show_name: str,
     season_number: int,
     api_key: str = '',
+    language: str = 'en',
 ) -> Dict[int, str]:
     """Get mapping {episode_num: title} for a TV season from TMDB.
 
@@ -127,17 +128,17 @@ def get_season_episode_titles(
     if not key:
         return {}
 
-    cache_key = f'{show_name.lower().strip()} {season_number}'
+    cache_key = f'{show_name.lower().strip()}:{season_number}:{language}'
     episode_cache = _load_episode_cache()
     cached = episode_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    show_id = get_tv_show_id(show_name, key)
+    show_id = get_tv_show_id(show_name, key, language)
     if not show_id:
         return {}
 
-    data = _tmdb_get(f'tv/{show_id}/season/{season_number}', key)
+    data = _tmdb_get(f'tv/{show_id}/season/{season_number}', key, {'language': language})
     if not data or not data.get('episodes'):
         return {}
 
@@ -154,7 +155,7 @@ def get_season_episode_titles(
     return result
 
 
-def search_movie(title: str, api_key: str = '') -> Optional[dict]:
+def search_movie(title: str, api_key: str = '', language: str = 'en') -> Optional[dict]:
     """Search for a movie by title on TMDB.
 
     Returns first result dict with keys: title, year, id.
@@ -163,7 +164,7 @@ def search_movie(title: str, api_key: str = '') -> Optional[dict]:
     key = _resolve_key(api_key)
     if not key:
         return None
-    data = _tmdb_get('search/movie', key, {'query': title})
+    data = _tmdb_get('search/movie', key, {'query': title, 'language': language})
     if data and data.get('results'):
         r = data['results'][0]
         year = ''
@@ -173,7 +174,7 @@ def search_movie(title: str, api_key: str = '') -> Optional[dict]:
     return None
 
 
-def enrich_year(title: str, api_key: str = '') -> Optional[int]:
+def enrich_year(title: str, api_key: str = '', language: str = 'en') -> Optional[int]:
     """Try to fetch release year for a movie title from TMDB.
 
     Returns year as int, or None if not found.
@@ -183,13 +184,13 @@ def enrich_year(title: str, api_key: str = '') -> Optional[int]:
         return None
 
     # Check in-memory cache
-    cache_key = f'year:{title.lower().strip()}'
+    cache_key = f'year:{title.lower().strip()}:{language}'
     if cache_key in _inmemory_cache:
         val = _inmemory_cache[cache_key]
         return int(val) if val else None
 
     # Try TV first, then movie
-    tv_data = _tmdb_get('search/tv', key, {'query': title})
+    tv_data = _tmdb_get('search/tv', key, {'query': title, 'language': language})
     if tv_data and tv_data.get('results'):
         r = tv_data['results'][0]
         year_str = r.get('first_air_date', '') or r.get('release_date', '')

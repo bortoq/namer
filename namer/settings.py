@@ -28,5 +28,5 @@ VIDEO_EXTENSIONS = {
 #   {channels}  — Max audio channels (from ffprobe, e.g. 6 for 5.1)
 #
 
-TEMPLATE_MOVIE = '{title} ({year}) [{quality}].{ext}'
+TEMPLATE_MOVIE = '{title} ({year}).{ext}'
 TEMPLATE_SERIES = '{dot_title}.S{season:02d}E{episode}.{dot_quality}.{ext}'

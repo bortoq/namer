@@ -103,7 +103,7 @@ def _search_variants(title: str) -> List[str]:
     return variants
 
 
-def search_show(title: str) -> Optional[int]:
+def search_show(title: str, language: str = 'en') -> Optional[int]:
     """Search TVmaze for *title* and return the best-matching show ID.
 
     Tries multiple query variants (original, without punctuation,
@@ -117,7 +117,7 @@ def search_show(title: str) -> Optional[int]:
         if query in seen:
             continue
         seen.add(query)
-        data = _api_get('/search/shows', {'q': query})
+        data = _api_get('/search/shows', {'q': query, 'language': language})
         if not data:
             continue
         # Check for exact match first
@@ -136,18 +136,18 @@ def search_show(title: str) -> Optional[int]:
         if query in seen:
             continue
         seen.add(query)
-        data = _api_get('/search/shows', {'q': query})
+        data = _api_get('/search/shows', {'q': query, 'language': language})
         if data:
             return data[0]['show']['id']
     return None
 
 
-def get_episodes(show_id: int) -> List[Dict]:
+def get_episodes(show_id: int, language: str = 'en') -> List[Dict]:
     """Return all episodes for *show_id*.
 
     Each entry:: {'season': 1, 'number': 1, 'name': 'Pilot', …}
     """
-    data = _api_get(f'/shows/{show_id}/episodes')
+    data = _api_get(f'/shows/{show_id}/episodes', {'language': language})
     if not data:
         return []
     result = []
@@ -160,7 +160,7 @@ def get_episodes(show_id: int) -> List[Dict]:
     return result
 
 
-def enrich_episode_titles(meta: Dict, protect_filename: bool = False) -> Dict:
+def enrich_episode_titles(meta: Dict, protect_filename: bool = False, language: str = 'en') -> Dict:
     """Look up episode titles from TVmaze and fill *meta['ep_title']*.
 
     Args:
@@ -168,6 +168,7 @@ def enrich_episode_titles(meta: Dict, protect_filename: bool = False) -> Dict:
         protect_filename: If True, keep the existing ``ep_title`` value
             (assumed to come from the filename) and do NOT override with
             TVmaze data.  Default False.
+        language: Two-letter language code (e.g. 'en', 'ru', 'de').
 
     Uses a disk cache so repeated lookups for the same show are instant.
     Will try multiple search variants if the first query fails.
@@ -193,15 +194,15 @@ def enrich_episode_titles(meta: Dict, protect_filename: bool = False) -> Dict:
 
     cache = _load_cache()
 
-    # Cache hit?
-    cache_key = title.lower().strip()
+    # Cache hit? (include language in key)
+    cache_key = f"{title.lower().strip()}:{language}"
     if cache_key in cache:
         episodes = cache[cache_key]
     else:
-        show_id = search_show(title)
+        show_id = search_show(title, language)
         if not show_id:
             return meta
-        episodes = get_episodes(show_id)
+        episodes = get_episodes(show_id, language)
         if not episodes:
             return meta
         cache[cache_key] = episodes

@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
             '  namer -n                                 # dry-run (preview only)\n'
             '  namer --tmdb-key YOUR_KEY                # enrich with episode titles from TMDB\n'
             '  namer -d /path/to/videos                 # process specific directory\n'
+            '  namer -l ru                               # russian episode titles\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -69,6 +70,14 @@ def build_parser() -> argparse.ArgumentParser:
         '-d', '--directory', default='',
         help='Target directory (default: current directory)',
     )
+    p.add_argument(
+        '-l', '--language', default='en',
+        help=(
+            'Language for episode/show names (TVmaze + TMDB). '
+            'Examples: en, ru, de, fr, es, ja. '
+            'Default: en'
+        ),
+    )
     return p
 
 
@@ -107,6 +116,7 @@ def main(argv: list = None) -> int:
         dry_run=args.dry_run,
         recursive=True,
         verbose=args.verbose,
+        language=args.language,
     )
 
     if args.dry_run:
