@@ -39,6 +39,7 @@ def generate_new_name(
     pattern: str = '',
     tmdb_key: str = '',
     season_number: int = 0,
+    language: str = "en",
 ) -> Tuple[str, dict]:
     """Generate a new filename for *file_path*.
 
@@ -49,6 +50,7 @@ def generate_new_name(
                  (*TEMPLATE_SERIES* or *TEMPLATE_MOVIE*).
         tmdb_key: TMDB API key for episode title / year enrichment.
         season_number: Explicit season number (overrides auto-detection).
+        language: Two-letter language code (e.g. "en", "ru", "de").
 
     Returns:
         ``(new_basename, metadata_dict)``
@@ -114,14 +116,14 @@ def generate_new_name(
     if meta['is_series'] and meta['title'] and meta.get('episode'):
         try:
             from namer.tvmaze import enrich_episode_titles
-            enrich_episode_titles(meta)
+            enrich_episode_titles(meta, language=language)
         except Exception:
             pass
 
     # 2b. TMDB enrichment (episode titles + year) if key provided
     if tmdb_key:
         from namer.enricher import enrich_meta
-        meta = enrich_meta(meta, tmdb_key)
+        meta = enrich_meta(meta, tmdb_key, language)
 
     # 2c. Last-resort fallback (only if no ep_title at all)
     if not meta.get('ep_title') and meta['is_series'] and meta['episode']:
