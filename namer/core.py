@@ -120,6 +120,16 @@ def generate_new_name(
         except Exception:
             pass
 
+    # 2ab. Wikipedia — translate foreign movie titles to English (free, no key)
+    #      Only runs when target language is English (langlinks point to English).
+    #      TMDB below can still override.
+    if language == "en" and not meta["is_series"] and meta.get("title"):
+        try:
+            from namer.wikipedia import enrich_title_via_wiki
+            enrich_title_via_wiki(meta)
+        except Exception:
+            pass
+
     # 2b. TMDB enrichment (episode titles + year) if key provided
     if tmdb_key:
         from namer.enricher import enrich_meta
