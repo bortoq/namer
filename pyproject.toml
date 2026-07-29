@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "namer"
+version = "0.1.0"
+description = "Rename video/series files using metadata from filenames"
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.scripts]
+namer = "namer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["namer*"]
