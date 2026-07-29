@@ -255,7 +255,14 @@ def process_directory(
         if verbose and rel != os.path.basename(fpath):
             print(f'\n[{rel}]')
 
-        new_name, meta = generate_new_name(fpath, known_title, pattern, tmdb_key, season_number, language)
+        new_name, meta = generate_new_name(
+                fpath,
+                known_title=known_title,
+                pattern=pattern,
+                tmdb_key=tmdb_key,
+                season_number=season_number,
+                language=language,
+            )
         results.append((fpath, new_name, meta))
 
     # ── Second pass: perform renames, warn on skips ────────────────────
