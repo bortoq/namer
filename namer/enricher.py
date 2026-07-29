@@ -10,7 +10,8 @@ Usage::
     # meta['year'] = 2008
 """
 
-from namer.tmdb import get_season_episode_titles, enrich_year
+import re
+from namer.tmdb import get_season_episode_titles, enrich_year, enrich_movie_title
 
 
 def enrich_meta(meta: dict, tmdb_key: str = '', language: str = 'en') -> dict:
@@ -38,11 +39,18 @@ def enrich_meta(meta: dict, tmdb_key: str = '', language: str = 'en') -> dict:
                 if ep_title:
                     meta['ep_title'] = ep_title
 
-    if not meta.get('is_series') and not meta.get('year'):
+    if not meta.get('is_series'):
         show_name = meta.get('title', '') or meta.get('show', '')
         if show_name:
-            year = enrich_year(show_name, tmdb_key, language)
-            if year:
-                meta['year'] = year
+            # Try to get localized movie title from TMDB
+            tmdb_title = enrich_movie_title(show_name, tmdb_key, language)
+            if tmdb_title and tmdb_title != show_name:
+                meta['title'] = tmdb_title
+                meta['dot_title'] = re.sub(r'\s+', '.', tmdb_title.strip())
+            # Fill year if missing
+            if not meta.get('year'):
+                year = enrich_year(show_name, tmdb_key, language)
+                if year:
+                    meta['year'] = year
 
     return meta

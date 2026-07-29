@@ -174,6 +174,25 @@ def search_movie(title: str, api_key: str = '', language: str = 'en') -> Optiona
     return None
 
 
+def enrich_movie_title(title: str, api_key: str = '', language: str = 'en') -> Optional[str]:
+    """Search TMDB for a movie by *title* and return the localized title.
+
+        Uses the ``language`` parameter to get the title in the desired language
+        (e.g. English title for a Russian filename when language='en').
+        Returns None if not found or no API key.
+        """
+    key = _resolve_key(api_key)
+    if not key:
+        return None
+
+    data = _tmdb_get('search/movie', key, {'query': title, 'language': language})
+    if data and data.get('results'):
+        r = data['results'][0]
+        tmdb_title = r.get('title', '') or r.get('original_title', '')
+        return tmdb_title if tmdb_title else None
+    return None
+
+
 def enrich_year(title: str, api_key: str = '', language: str = 'en') -> Optional[int]:
     """Try to fetch release year for a movie title from TMDB.
 
