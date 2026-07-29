@@ -105,7 +105,10 @@ def main(argv: list = None) -> int:
                 return 1
 
     # Merge -t/--title with positional title (positional takes precedence)
-    known = args.title.strip() if args.title else (args.title_opt.strip() if args.title_opt else '')
+    # Clean input to strip extension, year, quality tokens (user may pass a filename)
+    from namer.parser import clean_title
+    raw = args.title.strip() if args.title else (args.title_opt.strip() if args.title_opt else '')
+    known = clean_title(raw) if raw else ''
 
     renamed, total = process_directory(
         directory=directory,
