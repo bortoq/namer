@@ -256,34 +256,41 @@ def extract_ep_title_from_filename(file_name: str) -> str:
 
     Handles both N.NN. format ("1.01. Departure.mkv" → "Departure")
     and SxxExx format ("Show S01E01 Episode.mkv" → "Episode").
+    Preserves leading triple-dot ellipsis ("S01E17...In Translation" → "...In Translation").
     Returns empty string if no episode title found.
     """
     name = re.sub(r'\.(mkv|mp4|avi|m2ts|ts|m4v|mov|wmv|flv|webm|mpg|mpeg|vob|iso)$',
                   '', file_name, flags=re.IGNORECASE)
 
+    def _clean_ep_title(raw: str) -> str:
+        """Clean an episode title extracted after the marker."""
+        s = raw.strip()
+        s = _QUALITY_TOKENS.sub('', s)
+        s = _SOURCE_TOKENS.sub('', s)
+        s = re.sub(r'\[.*?\]', '', s)
+        s = re.sub(r'\(.*?\)', '', s)
+        # Preserve leading triple-dot ellipsis (part of episode title)
+        # Replace internal dots/dashes with spaces, but NOT leading ...
+        if s.startswith('...'):
+            suffix = s[3:].lstrip()
+            suffix = re.sub(r'[._-]', ' ', suffix)
+            suffix = re.sub(r'\s+', ' ', suffix).strip()
+            return '...' + suffix if suffix else '...'
+        s = re.sub(r'[._-]', ' ', s)
+        s = re.sub(r'\s+', ' ', s).strip()
+        return s
+
     # Try N.NN. format first (already-formatted files)
     m = _SEASON_DOT_EPISODE.search(name)
     if m:
-        after = name[m.end():].strip()
-        after = _QUALITY_TOKENS.sub('', after)
-        after = _SOURCE_TOKENS.sub('', after)
-        after = re.sub(r'\[.*?\]', '', after)
-        after = re.sub(r'\(.*?\)', '', after)
-        after = re.sub(r'[._-]', ' ', after)
-        after = re.sub(r'\s+', ' ', after).strip()
+        after = _clean_ep_title(name[m.end():])
         if after and len(after) >= 2:
             return after
 
     # Try SxxExx format
     m = _SERIES_PATTERN.search(name)
     if m:
-        after = name[m.end():].strip()
-        after = _QUALITY_TOKENS.sub('', after)
-        after = _SOURCE_TOKENS.sub('', after)
-        after = re.sub(r'\[.*?\]', '', after)
-        after = re.sub(r'\(.*?\)', '', after)
-        after = re.sub(r'[._-]', ' ', after)
-        after = re.sub(r'\s+', ' ', after).strip()
+        after = _clean_ep_title(name[m.end():])
         if after and len(after) >= 2:
             return after
 

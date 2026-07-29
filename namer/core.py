@@ -9,6 +9,21 @@ from namer import settings
 from namer.parser import parse_file
 from namer.settings import TEMPLATE_MOVIE, TEMPLATE_SERIES
 
+def _sanitize_filename(name: str) -> str:
+    """Replace filesystem-invalid characters with safe alternatives.
+
+    Handles characters invalid on Windows (NTFS/FAT/exFAT) and POSIX:
+      \\  /  :  *  ?  "  <  >  |  and control chars (0x00-0x1F).
+    Also replaces trailing dots/spaces which are invalid on Windows.
+    """
+    # Replace invalid chars with underscore
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '_', name)
+    # Windows forbids trailing dot or space
+    name = re.sub(r'[. ]+$', '', name)
+    return name
+
+
+
 
 def _format_template(template: str, meta: dict) -> str:
     """Apply *meta* dict to *template* via str.format().
@@ -26,10 +41,17 @@ def _format_template(template: str, meta: dict) -> str:
     new_name = re.sub(r'\s*\(\s*\)\s*', '', new_name)
     new_name = re.sub(r'\s*\{\s*}', '', new_name)
     new_name = re.sub(r'\s*\(\s*0\s*\)\s*', '', new_name)  # (0) = missing year
+    # Remove space before dot when the dot starts the extension (e.g. "{title} {mod}.{ext}" -> ".mkv")
+    # Must NOT match space before content dots like "...In Translation" in the ep_title.
+    # Use a positive lookahead for known video extensions.
+    new_name = re.sub(r'\s+(?=\.(?:mkv|mp4|avi|m2ts|ts|m4v|mov|wmv|flv|webm|mpg|mpeg|vob|iso)$)', '', new_name)
     # Collapse double dots from empty fields (e.g. "Title..S01" when ep_title is empty)
-    new_name = re.sub(r'\.{2,}', '.', new_name)
+    # Only collapse when surrounded by non-dot, non-space characters, preserving
+    # triple-dot ellipsis in episode titles like "...In Translation"
+    new_name = re.sub(r'(?<![.\s])\.{2,}(?![.\s])', '.', new_name)
     new_name = re.sub(r'\s+', ' ', new_name).strip()
     new_name = re.sub(r'[. ]$', '', new_name)
+    new_name = _sanitize_filename(new_name)
     return new_name
 
 
@@ -40,6 +62,7 @@ def generate_new_name(
     tmdb_key: str = '',
     season_number: int = 0,
     language: str = "en",
+    language_explicit: bool = False,
 ) -> Tuple[str, dict]:
     """Generate a new filename for *file_path*.
 
@@ -56,6 +79,16 @@ def generate_new_name(
         ``(new_basename, metadata_dict)``
     """
     meta = parse_file(file_path)
+    meta['_skip'] = False
+    meta['_language_explicit'] = language_explicit
+
+    # ── Supplementary content check ────────────────────────────────────
+    if not meta.get('_skip'):
+        from namer.extras import is_supplementary, describe_supplementary
+        if is_supplementary(file_path):
+            meta['_skip'] = True
+            meta['_skip_reason'] = describe_supplementary(file_path)
+            return os.path.basename(file_path), meta
 
     # ── Override title ─────────────────────────────────────────────────
     if known_title:
@@ -120,13 +153,26 @@ def generate_new_name(
         except Exception:
             pass
 
-    # 2ab. Wikipedia — translate foreign movie titles to English (free, no key)
-    #      Only runs when target language is English (langlinks point to English).
-    #      TMDB below can still override.
-    if language == "en" and not meta["is_series"] and meta.get("title"):
+    # 2ab. Wikipedia — translate foreign movie titles to target language (free, no key)
+    #      TMDB below can still override if key is available.
+    if not meta["is_series"] and meta.get("title"):
         try:
-            from namer.wikipedia import enrich_title_via_wiki
-            enrich_title_via_wiki(meta)
+            from namer.wikipedia import enrich_title_via_wiki, is_valid_language, _detect_language
+            if not is_valid_language(language):
+                print(f'error: unknown language code {language!r}.', file=sys.stderr)
+                meta["_skip"] = True
+                return os.path.basename(file_path), meta
+            wiki_ok = enrich_title_via_wiki(meta, language)
+            if not wiki_ok and meta.get("_language_explicit"):
+                source = _detect_language(meta.get("title", "") or "")
+                if source and source != language:
+                    print(
+                        f'warning: no Wikipedia translation available '
+                        f'from {source!r} to {language!r}',
+                        file=sys.stderr,
+                    )
+                    meta["_skip"] = True
+                    return os.path.basename(file_path), meta
         except Exception:
             pass
 
@@ -218,12 +264,27 @@ def rename_file(
             counter += 1
         dest = os.path.join(directory, f'{base}_{counter}{ext}')
 
+    # Belt-and-suspenders: final sanitisation (basename only)
+    dest = os.path.join(os.path.dirname(dest) or '.', _sanitize_filename(os.path.basename(dest)))
+
+    if file_path == dest:
+        return True
+
+    # Safety: verify source still exists BEFORE rename
+    if not os.path.exists(file_path):
+        print(f'  ✗ CRITICAL: source vanished before rename: {file_path}', file=sys.stderr)
+        return False
+
     try:
         os.rename(file_path, dest)
         print(f'  ✓ "{os.path.basename(file_path)}" → "{os.path.basename(dest)}"')
         return True
     except OSError as e:
         print(f'  ✗ Rename failed: {e}', file=sys.stderr)
+        # ── Data-loss guard: verify source survived failed rename ──
+        if not os.path.exists(file_path):
+            print(f'  ✗ CRITICAL: source file LOST after failed rename: {file_path}', file=sys.stderr)
+            print(f'  ✗ Attempted destination: {dest}', file=sys.stderr)
         return False
 
 
@@ -237,6 +298,7 @@ def process_directory(
     recursive: bool = True,
     verbose: bool = False,
     language: str = 'en',
+    language_explicit: bool = False,
 ) -> Tuple[int, int]:
     """Scan *directory* and rename all video files.
 
@@ -274,6 +336,7 @@ def process_directory(
                 tmdb_key=tmdb_key,
                 season_number=season_number,
                 language=language,
+                language_explicit=language_explicit,
             )
         results.append((fpath, new_name, meta))
 
@@ -292,7 +355,9 @@ def process_directory(
             _effective = TEMPLATE_SERIES if meta.get('is_series') else TEMPLATE_MOVIE
 
         skip_reason = ''
-        if not meta.get('title') or len(meta.get('title', '') or '') < 2:
+        if meta.get('_skip'):
+            skip_reason = meta.get('_skip_reason', 'skipped by user request')
+        elif not meta.get('title') or len(meta.get('title', '') or '') < 2:
             skip_reason = 'could not determine title (use -t NAME)'
         elif '{season}' in _effective and not meta.get('season'):
             skip_reason = 'could not determine season (use -sn N)'

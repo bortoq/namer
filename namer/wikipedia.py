@@ -1,15 +1,15 @@
-"""Wikipedia title translation — find English title for foreign-language movie names.
+"""Wikipedia title translation — find translated title for foreign-language movie names.
 
 Uses the free Wikipedia API (no key required) to search for a page in the
-source language and retrieve the English title via interlanguage links.
+source language and retrieve the translated title via interlanguage links.
 
 Typical usage::
 
     from namer.wikipedia import enrich_title_via_wiki
 
     meta = {'title': 'невидимый гость', 'is_series': False}
-    enrich_title_via_wiki(meta)
-    # meta['title'] == 'The Invisible Guest'
+    enrich_title_via_wiki(meta)           # default target=en
+    enrich_title_via_wiki(meta, 'it')     # Italian: 'L'ospite invisibile'
 """
 
 import json
@@ -18,6 +18,48 @@ import re
 import urllib.parse
 import urllib.request
 from typing import Dict, Optional
+
+# ── Known Wikipedia languages ──────────────────────────────────────────────────
+
+# Active Wikipedia language codes (from API sitematrix, 374 languages)
+_KNOWN_LANGUAGES = frozenset({
+    "aa", "ab", "ace", "ady", "af", "ak", "als", "alt", "am", "ami", "an", "ang",
+    "ann", "anp", "ar", "arc", "ary", "arz", "as", "ast", "atj", "av", "avk", "awa",
+    "ay", "az", "azb", "ba", "ban", "bar", "bat-smg", "bbc", "bcl", "bdr", "be",
+    "be-tarask", "be-x-old", "bew", "bg", "bh", "bi", "bjn", "blk", "bm", "bn", "bo",
+    "bol", "bpy", "br", "bs", "btm", "bug", "bxr", "ca", "cbk-zam", "cdo", "ce", "ceb",
+    "ch", "cho", "chr", "chy", "ckb", "co", "cr", "crh", "cs", "csb", "cu", "cv", "cy",
+    "da", "dag", "de", "dga", "din", "diq", "dsb", "dtp", "dty", "dv", "dz", "ee", "el",
+    "eml", "en", "eo", "es", "et", "eu", "ext", "fa", "fat", "ff", "fi", "fiu-vro", "fj",
+    "fo", "fon", "fr", "frp", "frr", "fur", "fy", "ga", "gag", "gan", "gcr", "gd", "gl",
+    "glk", "gn", "gom", "gor", "got", "gpe", "gsw", "gu", "guc", "gur", "guw", "gv", "ha",
+    "hak", "haw", "he", "hi", "hif", "ho", "hr", "hsb", "ht", "hu", "hy", "hyw", "hz",
+    "ia", "iba", "id", "ie", "ig", "igl", "ii", "ik", "ilo", "inh", "io", "is", "isv",
+    "it", "iu", "ja", "jam", "jbo", "jv", "ka", "kaa", "kab", "kai", "kaj", "kbd", "kbp",
+    "kcg", "kg", "kge", "ki", "kj", "kk", "kl", "km", "kn", "knc", "ko", "koi", "kr",
+    "krc", "ks", "ksh", "ku", "kus", "kv", "kw", "ky", "la", "lad", "lb", "lbe", "lez",
+    "lfn", "lg", "li", "lij", "lld", "lmo", "ln", "lo", "lrc", "lt", "ltg", "lv", "lzh",
+    "mad", "mag", "mai", "map-bms", "mdf", "mg", "mh", "mhr", "mi", "min", "mk", "ml",
+    "mn", "mni", "mnw", "mo", "mos", "mr", "mrj", "ms", "mt", "mus", "mwl", "my", "myv",
+    "mzn", "na", "nah", "nan", "nap", "nds", "nds-nl", "ne", "new", "ng", "nia", "nl",
+    "nn", "no", "nov", "nqo", "nr", "nrm", "nso", "nup", "nv", "ny", "oc", "olo", "om",
+    "or", "os", "pa", "pag", "pam", "pap", "pcd", "pcm", "pdc", "pfl", "pi", "pih", "pl",
+    "pms", "pnb", "pnt", "ppl", "ps", "pt", "pwn", "qu", "rki", "rm", "rmy", "rn", "ro",
+    "roa-rup", "roa-tara", "rsk", "ru", "rue", "rup", "rw", "sa", "sah", "sat", "sc",
+    "scn", "sco", "sd", "se", "sg", "sgs", "sh", "shi", "shn", "shy", "si", "simple",
+    "sk", "skr", "sl", "sm", "smn", "sn", "so", "sq", "sr", "srn", "ss", "st", "stq",
+    "su", "sv", "sw", "syl", "szl", "szy", "ta", "tay", "tcy", "tdd", "te", "tet", "tg",
+    "th", "ti", "tig", "tk", "tl", "tly", "tn", "to", "tok", "tpi", "tr", "trv", "ts",
+    "tt", "tum", "tw", "ty", "tyv", "udm", "ug", "uk", "ur", "uz", "ve", "vec", "vep",
+    "vi", "vls", "vo", "vro", "wa", "war", "wo", "wuu", "xal", "xh", "xmf", "yi", "yo",
+    "yue", "za", "zea", "zgh", "zh", "zh-classical", "zh-min-nan", "zh-yue", "zu",
+})
+
+
+def is_valid_language(code: str) -> bool:
+    """Check if *code* is a known active Wikipedia language code."""
+    return code in _KNOWN_LANGUAGES
+
 
 # ── Language detection ────────────────────────────────────────────────────────
 
@@ -139,34 +181,90 @@ def _get_langlink(page_title: str, from_lang: str, to_lang: str) -> Optional[str
     return None
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Wikidata helpers ──────────────────────────────────────────────────────────
 
-def get_english_title(foreign_title: str, source_lang: str = None) -> str:
-    """Find the English Wikipedia title for a foreign-language *foreign_title*.
+_WIKIDATA_API = 'https://www.wikidata.org/w/api.php'
+
+
+def _get_wikidata_id(page_title: str, language: str) -> Optional[str]:
+    """Get the Wikidata item ID (QID) for a Wikipedia page.
+
+    Args:
+        page_title: Page title on *language* Wikipedia.
+        language: Wikipedia language code.
+
+    Returns:
+        QID string (e.g. 'Q28114432') or None.
+    """
+    data = _wiki_api(language, {
+        'titles': page_title,
+        'prop': 'pageprops',
+        'ppprop': 'wikibase_item',
+    })
+    if not data:
+        return None
+    pages = data.get('query', {}).get('pages', {})
+    for pid, pdata in pages.items():
+        if pid != '-1':
+            return pdata.get('pageprops', {}).get('wikibase_item')
+    return None
+
+
+def _get_wikidata_label(qid: str, target_lang: str) -> Optional[str]:
+    """Get the label for a Wikidata item in *target_lang*.
+
+    Args:
+        qid: Wikidata item ID (e.g. 'Q28114432').
+        target_lang: Desired language code.
+
+    Returns:
+        Label string or None if not available.
+    """
+    try:
+        url = f'{_WIKIDATA_API}?action=wbgetentities&ids={qid}&props=labels&languages={target_lang}&format=json'
+        req = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        entity = data.get('entities', {}).get(qid, {})
+        label = entity.get('labels', {}).get(target_lang, {})
+        return label.get('value')
+    except Exception:
+        return None
+
+
+# ── Public API ────────────────────────────────────────────────────────────────────────
+
+def get_translated_title(foreign_title: str, target_lang: str = 'en', source_lang: str = None) -> str:
+    """Find the Wikipedia title for *foreign_title* in *target_lang*.
 
     Args:
         foreign_title: Title in the original language (e.g. 'невидимый гость').
-        source_lang: Wikipedia language code (e.g. 'ru', 'ja').
+        target_lang: Desired language code (e.g. 'en', 'it', 'de'). Default 'en'.
+        source_lang: Wikipedia language code of the source (e.g. 'ru').
                      If None, auto-detected from characters.
 
     Returns:
-        English title (e.g. 'The Invisible Guest'), or *foreign_title* as-is
-        if translation is not available.
+        Translated title (e.g. 'The Invisible Guest', 'L'ospite invisibile'),
+        or *foreign_title* as-is if translation is not available.
     """
     if not foreign_title:
         return foreign_title
 
-    # Auto-detect language if not provided
+    # Auto-detect source language if not provided
     if not source_lang:
         source_lang = _detect_language(foreign_title)
 
-    # Latin/unknown → assume already English (or can't translate)
+    # Latin/unknown → assume English (can't auto-detect source)
     if not source_lang:
+        return foreign_title
+
+    # If source == target, nothing to do
+    if source_lang == target_lang:
         return foreign_title
 
     # Check cache
     cache = _load_cache()
-    cache_key = f'{foreign_title.strip().lower()}:{source_lang}'
+    cache_key = f'{foreign_title.strip().lower()}:{source_lang}:{target_lang}'
     cached = cache.get(cache_key)
     if cached:
         return cached
@@ -176,35 +274,54 @@ def get_english_title(foreign_title: str, source_lang: str = None) -> str:
     if not page_title:
         return foreign_title
 
-    # Get English title via interlanguage link
-    en_title = _get_langlink(page_title, source_lang, 'en')
-    if not en_title:
+    # Get target-language title via interlanguage link
+    translated = _get_langlink(page_title, source_lang, target_lang)
+    if not translated:
+        # Fallback: get Wikidata label in the target language.
+        # This is more reliable than search-based fallbacks because Wikidata
+        # is the central hub that all Wikipedia editions link to.
+        qid = _get_wikidata_id(page_title, source_lang)
+        if qid:
+            translated = _get_wikidata_label(qid, target_lang)
+
+    if not translated:
         return foreign_title
 
     # Cache and return
-    cache[cache_key] = en_title
+    cache[cache_key] = translated
     _save_cache(cache)
-    return en_title
+    return translated
 
 
-def enrich_title_via_wiki(meta: Dict) -> Dict:
-    """Enrich *meta['title']* with the English title from Wikipedia (if different).
+def enrich_title_via_wiki(meta: Dict, target_lang: str = 'en') -> bool:
+    """Enrich *meta['title']* with the Wikipedia title in *target_lang* (if different).
 
     Only applies to movies (is_series=False).
-    Uses the detected source language. If title is already Latin, assumes English.
+    Source language is auto-detected from the title characters.
 
-    Modifies meta in-place and returns it.
+    Args:
+        meta: Metadata dict.
+        target_lang: Desired language code (e.g. 'en', 'it', 'de'). Default 'en'.
+
+    Modifies meta in-place.
+    Returns True if translation was applied, False if not (no page, already same, etc.).
     """
     if meta.get('is_series'):
-        return meta
+        return False
 
     title = meta.get('title', '') or meta.get('show', '')
     if not title:
-        return meta
+        return False
 
-    en_title = get_english_title(title)
-    if en_title and en_title != title:
-        meta['title'] = en_title
-        meta['dot_title'] = re.sub(r'\s+', '.', en_title.strip())
+    translated = get_translated_title(title, target_lang=target_lang)
+    if translated and translated != title:
+        # Clean up Wikipedia disambiguation suffixes: "(film)", "(film, 2016)", etc.
+        clean = re.sub(
+            r'\s*\(\s*(?:film|pel[íi]cula|movie|tv series|serie|film\s*,\s*\d{4})[^)]*\)\s*$',
+            '', translated, flags=re.IGNORECASE,
+        ).strip()
+        meta['title'] = clean or translated
+        meta['dot_title'] = re.sub(r'\s+', '.', (clean or translated).strip())
+        return True
 
-    return meta
+    return False

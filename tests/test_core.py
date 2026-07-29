@@ -15,16 +15,17 @@ class TestGenerateNewName:
 
     def test_series_default(self):
         name, meta = generate_new_name("Breaking.Bad.S01E01.1080p.BluRay.x264.mkv")
-        assert "Breaking" in name
-        assert "S01E01" in name
-        assert ".mkv" in name
         assert meta['is_series'] is True
+        # TEMPLATE_SERIES = '{season:02d}.{episode}. {ep_title}.{ext}'
+        assert "01.01." in name
+        assert ".mkv" in name
 
     def test_known_title(self):
         name, meta = generate_new_name("Show.S01E01.1080p.mkv", known_title="Breaking Bad")
-        assert "Breaking" in name
-        assert "Bad" in name
-        assert "S01E01" in name
+        # known_title sets meta['title'] but TEMPLATE_SERIES has no {title}
+        assert meta['title'] == "Breaking Bad"
+        assert "01.01." in name
+        assert ".mkv" in name
 
     def test_custom_pattern(self):
         name, meta = generate_new_name(

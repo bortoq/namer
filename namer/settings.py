@@ -22,11 +22,12 @@ VIDEO_EXTENSIONS = {
 #   {codec}     — Codec string (e.g. "x264", "HEVC")
 #   {audio}     — Audio codec (e.g. "DTS", "AAC")
 #   {hdr}       — HDR type (e.g. "HDR10")
+#   {mod}       — Modifier string (e.g. "Director's Cut", "Extended")
 #   {ep_title}   — Episode title (from TMDB enrichment)
 #   {audio_lang} — Audio languages (comma-separated, from ffprobe, e.g. "jpn,eng")
 #   {sub_lang}  — Subtitle languages (comma-separated, from ffprobe, e.g. "eng")
 #   {channels}  — Max audio channels (from ffprobe, e.g. 6 for 5.1)
 #
 
-TEMPLATE_MOVIE = '{title} ({year}).{ext}'
-TEMPLATE_SERIES = '{dot_title}.S{season:02d}E{episode}.{dot_quality}.{ext}'
+TEMPLATE_MOVIE = '{title} ({year}) {mod}.{ext}'
+TEMPLATE_SERIES = '{season:02d}.{episode}. {ep_title}.{ext}'

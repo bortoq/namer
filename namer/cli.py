@@ -104,6 +104,17 @@ def main(argv: list = None) -> int:
                       file=sys.stderr)
                 return 1
 
+    # Validate language code against known Wikipedia languages
+    from namer.wikipedia import is_valid_language
+    if not is_valid_language(args.language):
+        print(
+            f'error: unknown language code {args.language!r}. '
+            f'Use a valid Wikipedia language code (e.g. en, ru, de, fr, es, ja).',
+            file=sys.stderr,
+        )
+        return 1
+    _lang_explicit = args.language != 'en'
+
     # Merge -t/--title with positional title (positional takes precedence)
     # Clean input to strip extension, year, quality tokens (user may pass a filename)
     from namer.parser import clean_title
@@ -120,6 +131,7 @@ def main(argv: list = None) -> int:
         recursive=True,
         verbose=args.verbose,
         language=args.language,
+        language_explicit=_lang_explicit,
     )
 
     if args.dry_run:
