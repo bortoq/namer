@@ -91,13 +91,13 @@ class TestGenerateNewNameWithFlags:
         assert name == "Breaking Bad.mkv"
 
     def test_ep_title_fallback(self):
-        """When TVmaze/TMDB unavailable, ep_title falls back to 'Episode XX'."""
+        """When no ep_title available, output uses just season.episode.ext."""
         name, meta = generate_new_name(
             "XyzzyNoMatch.S01E02.mkv",
             pattern="{ep_title}.{ext}"
         )
-        assert meta['ep_title'] == "Episode 02"
-        assert name == "Episode 02.mkv"
+        assert meta['ep_title'] == "", f"expected empty, got {meta['ep_title']!r}"
+        assert name == ".mkv"
 
 
 class TestDirectoryHeuristics:
@@ -154,3 +154,47 @@ class TestDirectoryHeuristics:
         name, meta = generate_new_name("Show.S01E01.1080p.mkv")
         assert meta["title"] == "Show", f"title={meta['title']!r}"
         assert meta["season"] == 1
+
+
+class TestSeasonFromDirectory:
+    """Season detection from parent/subdirectory names."""
+
+    def test_japanese_shi_is_season_4(self):
+        """'Shi' in subdirectory name → season 4."""
+        import os, tempfile
+        from namer.core import generate_new_name
+        with tempfile.TemporaryDirectory() as tmpdir:
+            show_dir = os.path.join(tmpdir, "Natsume Yuujinchou", "Natsume Yuujinchou Shi [HWP]")
+            os.makedirs(show_dir)
+            fpath = os.path.join(show_dir, "Show 01.mkv")
+            with open(fpath, 'w') as f:
+                f.write('dummy')
+            name, meta = generate_new_name(fpath)
+            assert meta["season"] == 4, f"season={meta['season']} expected 4"
+            assert meta["episode"] == 1, f"episode={meta['episode']}"
+
+    def test_roman_iv_is_season_4(self):
+        """'IV' in subdirectory name → season 4."""
+        import os, tempfile
+        from namer.core import generate_new_name
+        with tempfile.TemporaryDirectory() as tmpdir:
+            show_dir = os.path.join(tmpdir, "Show", "Show IV")
+            os.makedirs(show_dir)
+            fpath = os.path.join(show_dir, "Show 01.mkv")
+            with open(fpath, 'w') as f:
+                f.write('dummy')
+            name, meta = generate_new_name(fpath)
+            assert meta["season"] == 4, f"season={meta['season']} expected 4"
+
+    def test_season_number_trailing(self):
+        """Trailing digits in dir name → season number."""
+        import os, tempfile
+        from namer.core import generate_new_name
+        with tempfile.TemporaryDirectory() as tmpdir:
+            show_dir = os.path.join(tmpdir, "Show", "Show 2")
+            os.makedirs(show_dir)
+            fpath = os.path.join(show_dir, "Show 01.mkv")
+            with open(fpath, 'w') as f:
+                f.write('dummy')
+            name, meta = generate_new_name(fpath)
+            assert meta["season"] == 2, f"season={meta['season']} expected 2"

@@ -157,28 +157,79 @@ def generate_new_name(
             meta['dot_title'] = re.sub(r'\s+', '.', dir_title.strip())
 
     # ── Season from directory path ────────────────────────────────────
+    # ── Season from directory path ────────────────────────────────────
     # If season is the default (0 or 1 from fallback), walk up directories
-    # looking for "Sxx" or "Season N" patterns.
+    # looking for "Sxx", "Season N", Japanese number words,
+    # Roman numerals, or trailing digits.
+    _SEASON_JAPANESE = {
+        'shi': 4, 'san': 3, 'ni': 2, 'two': 2, 'go': 5,
+        'roku': 6, 'nana': 7, 'shichi': 7, 'hachi': 8,
+        'kyuu': 9, 'ku': 9, 'juu': 10,
+    }
+    _SEROMS = {'i': 1, 'ii': 2, 'iii': 3, 'iv': 4, 'v': 5,
+               'vi': 6, 'vii': 7, 'viii': 8, 'ix': 9, 'x': 10}
     if meta.get('is_series') and (not meta.get('season') or meta['season'] in (0, 1)):
-        parent = os.path.dirname(os.path.abspath(file_path))
+        _start = os.path.dirname(os.path.abspath(file_path))
+        parent = _start
         while parent:
             dirname = os.path.basename(parent)
             if not dirname or dirname == os.path.sep:
                 break
+            # SxxExx or Sxx pattern
             m = _SERIES_PATTERN.search(dirname)
             if m:
                 s = int(m.group('season'))
                 if s:
                     meta['season'] = s
                     break
+            # "Season N" pattern
             m = re.search(r'season\s*(\d{1,2})', dirname, re.IGNORECASE)
             if m:
                 s = int(m.group(1))
                 if s:
                     meta['season'] = s
                     break
+            # "Part N", "Vol N", "Volume N"
+            m = re.search(r'(?:part|vol|volume)\s*(\d{1,2})', dirname, re.IGNORECASE)
+            if m:
+                s = int(m.group(1))
+                if s:
+                    meta['season'] = s
+                    break
+            # Compare dir with its parent: if dir starts with parent name,
+            # the extra suffix may contain the season indicator.
+            # Catches anime like "Natsume Yuujinchou Shi" (parent "Natsume Yuujinchou").
+            _next_parent = os.path.dirname(parent)
+            parent_name = os.path.basename(_next_parent) if _next_parent and _next_parent != parent else ''
+            suffix = ''
+            if parent_name:
+                _norm = lambda s: re.sub(r'[._\s\-\[\]()]+', ' ', s).strip().lower()
+                pn = _norm(parent_name)
+                dn = _norm(dirname)
+                if dn.startswith(pn + ' '):
+                    suffix = dn[len(pn):].strip()
+                    if suffix:
+                        for word, season_num in _SEASON_JAPANESE.items():
+                            if re.search(rf'\b{word}\b', suffix):
+                                meta['season'] = season_num
+                                break
+                if meta.get('season') not in (0, 1, None):
+                    break
+                if suffix:
+                    for rom, season_num in _SEROMS.items():
+                        if re.search(rf'\b{rom}\b', suffix):
+                            meta['season'] = season_num
+                            break
+                if meta.get('season') not in (0, 1, None):
+                    break
+            # Trailing digits: dir name ends with space/dot + 1-2 digits
+            m = re.search(r'(?:^|[\s.])(\d{1,2})$', dirname)
+            if m:
+                s = int(m.group(1))
+                if 1 <= s <= 50:
+                    meta['season'] = s
+                    break
             parent = os.path.dirname(parent)
-
     # ── Phase 2: Episode title enrichment ──────────────────────────────
 
     # 2a. TVmaze — always try if we have a show title + season/episode
@@ -218,9 +269,8 @@ def generate_new_name(
         from namer.enricher import enrich_meta
         meta = enrich_meta(meta, tmdb_key, language)
 
-    # 2c. Last-resort fallback (only if no ep_title at all)
-    if not meta.get('ep_title') and meta['is_series'] and meta['episode']:
-        meta['ep_title'] = f'Episode {meta["episode"]:02d}'
+    # 2c. No fallback ep_title — if it's empty, let the template
+    #     produce clean {season}.{episode}.ext without fabricated titles.
 
     # ── Phase 3: Technical metadata (ffprobe) ─────────────────────────
     try:
@@ -264,8 +314,8 @@ def generate_new_name(
         return basename, meta
     if _template_uses(template, 'episode') and not meta.get('episode'):
         return basename, meta
-    if _template_uses(template, 'ep_title') and not meta.get('ep_title'):
-        return basename, meta
+    # Allow missing ep_title — _format_template cleans up the gap
+    # (e.g. "01.01. .avi" → "01.01.avi" via double-dot collapse)
 
     new_name = _format_template(template, meta)
     if not new_name:
@@ -413,8 +463,7 @@ def process_directory(
             skip_reason = 'could not determine season (use -sn N)'
         elif _template_uses(_effective, 'episode') and not meta.get('episode'):
             skip_reason = 'could not determine episode'
-        elif _template_uses(_effective, 'ep_title') and not meta.get('ep_title'):
-            skip_reason = 'could not determine episode title'
+        # Allow missing ep_title — _format_template handles the gap
 
         if skip_reason:
             print(f'  ⚠ {basename}', file=sys.stderr)
