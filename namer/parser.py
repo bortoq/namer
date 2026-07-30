@@ -82,14 +82,21 @@ def parse_season_episode(file_name: str) -> Tuple[Optional[int], Optional[int]]:
     """Extract (season, episode) from a filename.
 
     Tries Sxx/SxxExx first, then standalone episode number (anime format).
+    If Sxx is found without Exx, continues to fallback patterns to find
+    the episode number (e.g. "Ep.01" in "Show.S01.Ep.01.avi").
     Returns (None, None) if nothing found.
     """
+    season_from_series = None  # saved from Sxx match if no Exx found
+
     # Primary: Sxx or SxxExx
     m = _SERIES_PATTERN.search(file_name)
     if m:
         season = int(m.group('season'))
         episode = int(m.group('episode')) if m.group('episode') else None
-        return season, episode
+        if episode is not None:
+            return season, episode
+        # Sxx without Exx — save season and continue to fallback patterns
+        season_from_series = season
 
     # NxNN format: 1x02, 2x01, etc.
     m = _SERIES_X_FORMAT.search(file_name)
@@ -98,20 +105,20 @@ def parse_season_episode(file_name: str) -> Tuple[Optional[int], Optional[int]]:
         episode = int(m.group('episode'))
         return season, episode
 
-    # Fallback: standalone episode number like " - 01"
+    # Fallback: standalone episode number like " - 01" or ".01." at end
     m = _EPISODE_FALLBACK.search(file_name)
     if m:
         ep = int(m.group('episode'))
         # Filter out years (>=1900) and common resolutions (480/576/720)
         if ep < 1900 and ep not in (480, 576, 720):
-            return 1, ep  # default season 1
+            return (season_from_series or 1), ep
 
     # Episode in brackets: [01] or [01_of_74]
     m = _EPISODE_IN_BRACKETS.search(file_name)
     if m:
         ep = int(m.group('episode'))
         if ep < 1900 and ep not in (480, 576, 720):
-            return 1, ep
+            return (season_from_series or 1), ep
 
     # "N.NN." format: already-formatted season.episode.
     m = _SEASON_DOT_EPISODE.search(file_name)
@@ -119,6 +126,10 @@ def parse_season_episode(file_name: str) -> Tuple[Optional[int], Optional[int]]:
         season = int(m.group('season'))
         episode = int(m.group('episode'))
         return season, episode
+
+    # If we had Sxx but no episode was found by any fallback, return (season, None)
+    if season_from_series is not None:
+        return season_from_series, None
 
     return None, None
 
@@ -369,14 +380,14 @@ def parse_file(file_path: str) -> dict:
     quality: QualityInfo = parse_quality(basename)
 
     # Extract episode title from filename content after season/ep marker
-    ep_title_fn = extract_ep_title_from_filename(basename)
+    # ep_title is no longer scraped from filename — comes only from enrichment
 
     # When SxxExx is detected, split title/ep_title at the marker boundary
     # This prevents episode name from leaking into the show title
     marker_match = _SERIES_PATTERN.search(basename) or _SEASON_DOT_EPISODE.search(basename)
     if marker_match:
         before = basename[:marker_match.start()]
-        title = clean_title(before) if before.strip() else (clean_title(basename) if not ep_title_fn else '')
+        title = clean_title(before) if before.strip() else ''
         # If no content before the marker (e.g. "S01E01.mkv"), title stays empty
         # and will be filled later by directory heuristic or -t flag
     else:
@@ -418,6 +429,6 @@ def parse_file(file_path: str) -> dict:
         'hdr': quality.hdr,
         'mod': mod_str,
         'group': '',
-        'ep_title': ep_title_fn,
+        'ep_title': '',
         'is_series': is_series,
     }

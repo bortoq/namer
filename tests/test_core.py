@@ -14,17 +14,22 @@ class TestGenerateNewName:
         assert ".mkv" in name
 
     def test_series_default(self):
-        name, meta = generate_new_name("Breaking.Bad.S01E01.1080p.BluRay.x264.mkv")
+        name, meta = generate_new_name(
+            "Breaking.Bad.S01E01.1080p.BluRay.x264.mkv",
+            pattern="{season:02d}.{episode:02d}.{ext}"
+        )
         assert meta['is_series'] is True
-        # TEMPLATE_SERIES = '{season:02d}.{episode}. {ep_title}.{ext}'
         assert "01.01." in name
         assert ".mkv" in name
 
     def test_known_title(self):
-        name, meta = generate_new_name("Show.S01E01.1080p.mkv", known_title="Breaking Bad")
-        # known_title sets meta['title'] but TEMPLATE_SERIES has no {title}
+        name, meta = generate_new_name(
+            "Show.S01E01.1080p.mkv",
+            known_title="Breaking Bad",
+            pattern="{title}.S{season:02d}E{episode:02d}.{ext}"
+        )
         assert meta['title'] == "Breaking Bad"
-        assert "01.01." in name
+        assert "Breaking Bad.S01E01" in name
         assert ".mkv" in name
 
     def test_custom_pattern(self):
@@ -91,14 +96,50 @@ class TestGenerateNewNameWithFlags:
         assert name == "Breaking Bad.mkv"
 
     def test_ep_title_fallback(self):
-        """When no ep_title available, output uses just season.episode.ext."""
+        """When ep_title is empty and template uses it, file is skipped (not renamed)."""
         name, meta = generate_new_name(
             "XyzzyNoMatch.S01E02.mkv",
             pattern="{ep_title}.{ext}"
         )
         assert meta['ep_title'] == "", f"expected empty, got {meta['ep_title']!r}"
-        assert name == ".mkv"
+        # Should return original basename because ep_title is required by template but missing
+        assert name == "XyzzyNoMatch.S01E02.mkv"
 
+
+
+
+class TestEpTitleEnrichment:
+    """Tests for ep_title enrichment (not scraped from filename)."""
+
+    def test_yuru_camp_ep_title_from_enrichment_not_filename(self):
+        """Yuru Camp: ep_title comes from TVmaze enrichment, NOT filename scraping."""
+        name, meta = generate_new_name(
+            "Yuru.Camp.S01.2018.AniDub.BDRip.Deadmauvlad.Ep.01.avi",
+            pattern="{season:02d}.{episode:02d}. {ep_title}.{ext}"
+        )
+        # ep_title is from TVmaze (not from filename), so it won't contain garbage
+        assert meta['season'] == 1
+        assert meta['episode'] == 1
+        assert meta['ep_title'] != "", "ep_title should be filled by enrichment"
+        # Should NOT contain filename garbage
+        assert "AniDub" not in meta['ep_title'], f"garbage in ep_title: {meta['ep_title']!r}"
+        assert "Deadmauvlad" not in meta['ep_title'], f"garbage in ep_title: {meta['ep_title']!r}"
+        assert "2018" not in meta['ep_title'], f"garbage in ep_title: {meta['ep_title']!r}"
+
+    def test_show_not_found_skips_when_ep_title_required(self):
+        """When no enrichment found ep_title and template uses it → skip."""
+        name, meta = generate_new_name(
+            "XyzzyNoMatch.S01E02.mkv",
+            pattern="{season:02d}.{episode:02d}. {ep_title}.{ext}"
+        )
+        assert meta['ep_title'] == ""
+        assert name == "XyzzyNoMatch.S01E02.mkv", f"expected skip, got {name!r}"
+
+    def test_ep_title_not_scraped_from_filename(self):
+        """parse_file does NOT extract ep_title from filename."""
+        from namer.parser import parse_file
+        meta = parse_file("1.01. Some Episode Title.mkv")
+        assert meta['ep_title'] == "", f"ep_title={meta['ep_title']!r}"
 
 class TestDirectoryHeuristics:
     """Tests for directory-based title/season detection."""

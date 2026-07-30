@@ -168,20 +168,20 @@ class TestTitleFromPath:
         assert s == 1
         assert e == 1
 
-    def test_dot_format_extracts_ep_title(self):
-        """Episode title extracted from after '1.01.' prefix."""
+    def test_dot_format_ep_title_not_scraped(self):
+        """ep_title is NOT extracted from filename — comes only from enrichment."""
         from namer.parser import parse_file
         meta = parse_file("1.01. Departure.mkv")
-        assert meta['ep_title'] == "Departure"
+        assert meta['ep_title'] == "", f"expected empty, got {meta['ep_title']!r}"
         assert meta['season'] == 1
 
     def test_dot_format_title_vs_ep_title(self):
         """For formatted names, title is empty (no show name in filename),
-        ep_title is extracted from after N.NN. prefix."""
+        ep_title is empty too (no longer scraped from filename)."""
         from namer.parser import parse_file
         meta = parse_file("1.01. Departure.mkv")
         assert meta['title'] == ""  # filename has no show name
-        assert meta['ep_title'] == "Departure"
+        assert meta['ep_title'] == ""  # no longer scraped from filename
 
 
 class TestBugFixes:
@@ -359,6 +359,39 @@ class TestNmr005Regression:
             f"parse_file({fname!r}) year = {year}, expected {exp_year}"
         )
 
+
+    # ── Bug 4: S01 without Exx + Ep.XX format (Yuru Camp) ──────────────
+
+    def test_yuru_camp_s01_ep01_parsing(self):
+        """S01 without Exx + Ep.01 → season=1, episode=1."""
+        s, e = parse_season_episode(
+            "Yuru.Camp.S01.2018.AniDub.BDRip.Deadmauvlad.Ep.01.avi"
+        )
+        assert s == 1, f"season={s}"
+        assert e == 1, f"episode={e}"
+
+    def test_yuru_camp_parse_file_ep_title_empty(self):
+        """ep_title is NOT scraped from filename."""
+        meta = parse_file(
+            "Yuru.Camp.S01.2018.AniDub.BDRip.Deadmauvlad.Ep.01.avi"
+        )
+        assert meta['season'] == 1
+        assert meta['episode'] == 1
+        assert meta['ep_title'] == "", f"ep_title={meta['ep_title']!r}"
+        assert meta['is_series'] is True
+        assert meta['title'] == "Yuru Camp", f"title={meta['title']!r}"
+
+    def test_yuru_camp_s01_without_episode_returns_season_none(self):
+        """S01 alone (no episode number anywhere) returns (1, None)."""
+        s, e = parse_season_episode("Yuru.Camp.S01.mkv")
+        assert s == 1, f"season={s}"
+        assert e is None, f"episode={e}"
+
+    def test_sxx_falls_through_to_episode_fallback(self):
+        """Sxx without Exx continues to fallback patterns."""
+        s, e = parse_season_episode("Show.S02.1080p.BluRay.05.mkv")
+        assert s == 2, f"season={s}"
+        assert e == 5, f"episode={e}"
 
 class TestSpecialEpisodeDetection:
     """Tests for [Special]/[OVA] detection in parse_file."""

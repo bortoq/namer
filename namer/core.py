@@ -91,6 +91,7 @@ def generate_new_name(
     meta = parse_file(file_path)
     meta['_skip'] = False
     meta['_language_explicit'] = language_explicit
+    meta['_title_enriched'] = False
 
     # ── Supplementary content check ────────────────────────────────────
     if not meta.get('_skip'):
@@ -104,13 +105,13 @@ def generate_new_name(
     if known_title:
         meta['title'] = known_title
         meta['dot_title'] = re.sub(r'\s+', '.', known_title.strip())
+        meta['_title_enriched'] = True
 
     # ── Season override ────────────────────────────────────────────────
     if season_number > 0:
         meta['season'] = season_number
 
-    # Save whether ep_title was extracted FROM FILENAME (vs from ffprobe etc.)
-    filename_ep_title = meta.get('ep_title', '')
+    # ep_title is NOT scraped from filename — comes only from enrichment (TVmaze/TMDB/ffprobe)
 
     # ── Phase 1: Collect show name hints ───────────────────────────────
 
@@ -121,8 +122,7 @@ def generate_new_name(
         if ff_tags.get('show_name') and not known_title:
             meta['title'] = ff_tags['show_name']
             meta['dot_title'] = re.sub(r'\s+', '.', ff_tags['show_name'].strip())
-        if ff_tags.get('ep_title') and not filename_ep_title:
-            # Only use ffprobe ep_title if filename didn't have one
+        if ff_tags.get('ep_title'):
             meta['ep_title'] = ff_tags['ep_title']
     except (ImportError, FileNotFoundError):
         pass
@@ -134,8 +134,6 @@ def generate_new_name(
     needs_dir_help = (
         not meta['title']
         or len(meta['title']) < 3
-        or (filename_ep_title and meta['title'] == filename_ep_title)
-        or (filename_ep_title and meta['title'] in filename_ep_title)
         or meta['title'] == os.path.splitext(os.path.basename(file_path))[0]
     )
 
@@ -149,7 +147,6 @@ def generate_new_name(
         prefer_dir = (
             needs_dir_help
             or (not meta['title'])
-            or (filename_ep_title and meta.get('title', '') == filename_ep_title)
             or (dir_lower != fn_lower and dir_lower in fn_lower and len(dir_title) < len(meta['title']))
         )
         if prefer_dir:
@@ -256,6 +253,8 @@ def generate_new_name(
                 meta["_skip"] = True
                 return os.path.basename(file_path), meta
             wiki_ok = enrich_title_via_wiki(meta, language)
+            if wiki_ok:
+                meta['_title_enriched'] = True
             if not wiki_ok and meta.get("_language_explicit"):
                 source = _detect_language(meta.get("title", "") or "")
                 if source and source != language:
@@ -270,11 +269,15 @@ def generate_new_name(
             pass
 
     # 2b. TVmaze — always try for series (free, no key).
-    #     Only fills ep_title if not already set from filename.
+    #     Fills ep_title and may correct the show title.
     if meta['is_series'] and meta['title'] and meta.get('episode'):
         try:
             from namer.tvmaze import enrich_episode_titles
+            title_before = meta.get('title', '')
+            ep_title_before = meta.get('ep_title', '')
             enrich_episode_titles(meta, language=language)
+            if meta.get('title', '') != title_before or meta.get('ep_title', '') != ep_title_before:
+                meta['_title_enriched'] = True
         except Exception:
             pass
 
@@ -282,12 +285,13 @@ def generate_new_name(
     #     Can also correct movie/series title via localized version.
     if tmdb_key:
         from namer.enricher import enrich_meta
+        title_before = meta.get('title', '')
+        ep_before = meta.get('ep_title', '')
         meta = enrich_meta(meta, tmdb_key, language)
+        if meta.get('title', '') != title_before or meta.get('ep_title', '') != ep_before:
+            meta['_title_enriched'] = True
 
-    # 2d. No fallback ep_title — if it's empty, let the template
-    #     produce clean {season}.{episode}.ext without fabricated titles.
-
-    #     produce clean {season}.{episode}.ext without fabricated titles.
+    # 2d. ep_title is required if template uses it — validation below will catch emptiness.
 
     # ── Phase 3: Technical metadata (ffprobe) ─────────────────────────
     try:
@@ -331,8 +335,9 @@ def generate_new_name(
         return basename, meta
     if _template_uses(template, 'episode') and meta.get('episode') is None:
         return basename, meta
-    # Allow missing ep_title — _format_template cleans up the gap
-    # (e.g. "01.01. .avi" → "01.01.avi" via double-dot collapse)
+    # ep_title is required when template uses it — skip if missing
+    if _template_uses(template, 'ep_title') and not meta.get('ep_title'):
+        return basename, meta
 
     new_name = _format_template(template, meta)
     if not new_name:
