@@ -115,9 +115,11 @@ class TestDirectoryHeuristics:
                 f.write('dummy')
             name, meta = generate_new_name(fpath)
             assert meta["season"] == 7, f"season={meta['season']}"
-            assert meta["title"] == "Natsume Yuujinchou", f"title={meta['title']!r}"
+            assert meta["title"] == "Natsume\'s Book of Friends", f"title={meta['title']!r}"
             assert meta["is_series"] is True
             assert meta["episode"] == 1
+            # Also verify that the corrected title was used by TVmaze to find episode titles
+            assert meta.get("ep_title") and meta["ep_title"] != ""
 
     def test_season_from_directory_season_word(self):
         """Season detected from 'Season 2' pattern in directory."""

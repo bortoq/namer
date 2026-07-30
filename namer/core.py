@@ -231,19 +231,12 @@ def generate_new_name(
                     break
             parent = os.path.dirname(parent)
     # ── Phase 2: Episode title enrichment ──────────────────────────────
+    # ── Phase 2: Title & episode enrichment (multiple sources) ─────
 
-    # 2a. TVmaze — always try if we have a show title + season/episode
-    #     Only fills ep_title if not already set from FILENAME
-    if meta['is_series'] and meta['title'] and meta.get('episode'):
-        try:
-            from namer.tvmaze import enrich_episode_titles
-            enrich_episode_titles(meta, language=language)
-        except Exception:
-            pass
-
-    # 2ab. Wikipedia — translate foreign movie titles to target language (free, no key)
-    #      TMDB below can still override if key is available.
-    if not meta["is_series"] and meta.get("title"):
+    # 2a. Wikipedia — auto-detect source language, find translated title (free, no key).
+    #     Runs for movies, series, and anime to correct the show/movie title.
+    #     Must run BEFORE TVmaze/TMDB so corrected title helps those lookups.
+    if meta.get("title"):
         try:
             from namer.wikipedia import enrich_title_via_wiki, is_valid_language, _detect_language
             if not is_valid_language(language):
@@ -264,12 +257,24 @@ def generate_new_name(
         except Exception:
             pass
 
-    # 2b. TMDB enrichment (episode titles + year) if key provided
+    # 2b. TVmaze — always try for series (free, no key).
+    #     Only fills ep_title if not already set from filename.
+    if meta['is_series'] and meta['title'] and meta.get('episode'):
+        try:
+            from namer.tvmaze import enrich_episode_titles
+            enrich_episode_titles(meta, language=language)
+        except Exception:
+            pass
+
+    # 2c. TMDB enrichment (episode titles + year) if key provided.
+    #     Can also correct movie/series title via localized version.
     if tmdb_key:
         from namer.enricher import enrich_meta
         meta = enrich_meta(meta, tmdb_key, language)
 
-    # 2c. No fallback ep_title — if it's empty, let the template
+    # 2d. No fallback ep_title — if it's empty, let the template
+    #     produce clean {season}.{episode}.ext without fabricated titles.
+
     #     produce clean {season}.{episode}.ext without fabricated titles.
 
     # ── Phase 3: Technical metadata (ffprobe) ─────────────────────────

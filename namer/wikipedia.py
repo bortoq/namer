@@ -254,8 +254,16 @@ def get_translated_title(foreign_title: str, target_lang: str = 'en', source_lan
     if not source_lang:
         source_lang = _detect_language(foreign_title)
 
-    # Latin/unknown → assume English (can't auto-detect source)
+    # Latin/unknown script — try English Wikipedia search.
+    # English Wikipedia may still find the page (e.g. anime romaji titles).
     if not source_lang:
+        page_title = _search_page(foreign_title, 'en')
+        if page_title:
+            qid = _get_wikidata_id(page_title, 'en')
+            if qid:
+                translated = _get_wikidata_label(qid, target_lang)
+                if translated and translated != foreign_title:
+                    return translated
         return foreign_title
 
     # If source == target, nothing to do
@@ -296,7 +304,7 @@ def get_translated_title(foreign_title: str, target_lang: str = 'en', source_lan
 def enrich_title_via_wiki(meta: Dict, target_lang: str = 'en') -> bool:
     """Enrich *meta['title']* with the Wikipedia title in *target_lang* (if different).
 
-    Only applies to movies (is_series=False).
+    Works for both movies and TV series/anime.
     Source language is auto-detected from the title characters.
 
     Args:
@@ -306,9 +314,6 @@ def enrich_title_via_wiki(meta: Dict, target_lang: str = 'en') -> bool:
     Modifies meta in-place.
     Returns True if translation was applied, False if not (no page, already same, etc.).
     """
-    if meta.get('is_series'):
-        return False
-
     title = meta.get('title', '') or meta.get('show', '')
     if not title:
         return False
