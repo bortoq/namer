@@ -118,9 +118,8 @@ def generate_new_name(
         pass
 
     # 1b. Directory path heuristic — use directory tree for show name
-    #     Check if filename-extracted title looks like an episode name
-    #     (short, or equal to ep_title from filename)
-    from namer.parser import title_from_path
+    #     Also detect season from directory names (e.g. "Show S7", "Season 7")
+    from namer.parser import title_from_path, _SERIES_PATTERN
     title_from_filename = known_title or meta.get('_original_title', meta.get('title', ''))
     needs_dir_help = (
         not meta['title']
@@ -129,18 +128,46 @@ def generate_new_name(
         or (filename_ep_title and meta['title'] in filename_ep_title)
         or meta['title'] == os.path.splitext(os.path.basename(file_path))[0]
     )
-    if needs_dir_help:
-        dir_title = title_from_path(file_path)
-        if dir_title:
-            # Override title from path when:
-            # - no title exists, OR
-            # - path title is longer (more specific), OR
-            # - filename title equals ep_title (formatted file — title is just episode name)
-            if (not meta['title']
-                or len(dir_title) > len(meta['title'])
-                or (filename_ep_title and meta.get('title', '') == filename_ep_title)):
-                meta['title'] = dir_title
-                meta['dot_title'] = re.sub(r'\s+', '.', dir_title.strip())
+
+    dir_title = title_from_path(file_path) if (needs_dir_help or meta.get('title')) else ''
+    if dir_title:
+        fn_lower = meta.get('title', '').lower()
+        dir_lower = dir_title.lower()
+        # Prefer directory title when:
+        #   - original conditions (needs_dir_help), OR
+        #   - dir title is a clean subset of filename title (filename has extra junk)
+        prefer_dir = (
+            needs_dir_help
+            or (not meta['title'])
+            or (filename_ep_title and meta.get('title', '') == filename_ep_title)
+            or (dir_lower != fn_lower and dir_lower in fn_lower and len(dir_title) < len(meta['title']))
+        )
+        if prefer_dir:
+            meta['title'] = dir_title
+            meta['dot_title'] = re.sub(r'\s+', '.', dir_title.strip())
+
+    # ── Season from directory path ────────────────────────────────────
+    # If season is the default (0 or 1 from fallback), walk up directories
+    # looking for "Sxx" or "Season N" patterns.
+    if meta.get('is_series') and (not meta.get('season') or meta['season'] in (0, 1)):
+        parent = os.path.dirname(os.path.abspath(file_path))
+        while parent:
+            dirname = os.path.basename(parent)
+            if not dirname or dirname == os.path.sep:
+                break
+            m = _SERIES_PATTERN.search(dirname)
+            if m:
+                s = int(m.group('season'))
+                if s:
+                    meta['season'] = s
+                    break
+            m = re.search(r'season\s*(\d{1,2})', dirname, re.IGNORECASE)
+            if m:
+                s = int(m.group(1))
+                if s:
+                    meta['season'] = s
+                    break
+            parent = os.path.dirname(parent)
 
     # ── Phase 2: Episode title enrichment ──────────────────────────────
 

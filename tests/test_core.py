@@ -98,3 +98,59 @@ class TestGenerateNewNameWithFlags:
         )
         assert meta['ep_title'] == "Episode 02"
         assert name == "Episode 02.mkv"
+
+
+class TestDirectoryHeuristics:
+    """Tests for directory-based title/season detection."""
+
+    def test_season_from_directory_sxx(self):
+        """Season detected from 'S7' in parent directory name."""
+        import os, tempfile
+        from namer.core import generate_new_name
+        with tempfile.TemporaryDirectory() as tmpdir:
+            show_dir = os.path.join(tmpdir, "Natsume Yuujinchou", "Natsume Yuujinchou S7")
+            os.makedirs(show_dir)
+            fpath = os.path.join(show_dir, "Natsume Yuujinchou Shichi 01.avi")
+            with open(fpath, 'w') as f:
+                f.write('dummy')
+            name, meta = generate_new_name(fpath)
+            assert meta["season"] == 7, f"season={meta['season']}"
+            assert meta["title"] == "Natsume Yuujinchou", f"title={meta['title']!r}"
+            assert meta["is_series"] is True
+            assert meta["episode"] == "01"
+
+    def test_season_from_directory_season_word(self):
+        """Season detected from 'Season 2' pattern in directory."""
+        import os, tempfile
+        from namer.core import generate_new_name
+        with tempfile.TemporaryDirectory() as tmpdir:
+            show_dir = os.path.join(tmpdir, "Some Show", "Season 2")
+            os.makedirs(show_dir)
+            fpath = os.path.join(show_dir, "Some Show - 03.mkv")
+            with open(fpath, 'w') as f:
+                f.write('dummy')
+            name, meta = generate_new_name(fpath)
+            assert meta["season"] == 2, f"season={meta['season']}"
+            assert meta["episode"] == "03"
+
+    def test_title_from_directory_preferred_over_filename(self):
+        """Clean directory title preferred when filename has extra words."""
+        import os, tempfile
+        from namer.core import generate_new_name
+        with tempfile.TemporaryDirectory() as tmpdir:
+            show_dir = os.path.join(tmpdir, "Attack on Titan", "Attack on Titan S4")
+            os.makedirs(show_dir)
+            fpath = os.path.join(show_dir, "Attack on Titan Final Season 01.mkv")
+            with open(fpath, 'w') as f:
+                f.write('dummy')
+            name, meta = generate_new_name(fpath)
+            assert meta["title"] == "Attack on Titan", f"title={meta['title']!r}"
+            assert meta["is_series"] is True
+            assert meta["season"] == 4
+
+    def test_title_from_directory_not_used_for_generic_paths(self):
+        """Directory title NOT used when path is generic (cwd, home, etc.)."""
+        from namer.core import generate_new_name
+        name, meta = generate_new_name("Show.S01E01.1080p.mkv")
+        assert meta["title"] == "Show", f"title={meta['title']!r}"
+        assert meta["season"] == 1

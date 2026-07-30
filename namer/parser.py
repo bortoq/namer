@@ -236,7 +236,7 @@ def title_from_path(file_path: str) -> str:
             if is_generic or len(parts) >= 3:
                 break
             cleaned = clean_title(dirname)
-            if len(cleaned) >= 2:
+            if len(cleaned) >= 2 and (not parts or cleaned != parts[-1]):
                 parts.append(cleaned)
             parent = os.path.dirname(parent)
             continue
@@ -252,6 +252,13 @@ def title_from_path(file_path: str) -> str:
         if len(cleaned) >= 2:
             parts.append(cleaned)
         parent = os.path.dirname(parent)
+
+    # Deduplicate consecutive identical entries (e.g. parent + subdir with same show name)
+    deduped = []
+    for p in parts:
+        if not deduped or p != deduped[-1]:
+            deduped.append(p)
+    parts = deduped
 
     if not parts:
         return ''
