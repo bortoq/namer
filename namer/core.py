@@ -444,44 +444,48 @@ def process_directory(
             )
         results.append((fpath, new_name, meta))
 
-    # ── Second pass: perform renames, warn on skips ────────────────────
+    # ── Second pass: perform renames, warn on skips ───────────────────────────
     renamed = 0
     reserved: set = set()  # track claimed destinations for intra-batch conflict
-    for fpath, new_name, meta in results:
-        # Check if file would be skipped (incomplete metadata)
-        basename = os.path.basename(fpath)
-        # Determine effective template (same logic as generate_new_name)
-        if pattern:
-            if not meta.get('is_series') and (_template_uses(pattern, 'season') or _template_uses(pattern, 'episode')):
-                _effective = '{title} ({year}).{ext}'  # minimal movie fallback
+    try:
+        for fpath, new_name, meta in results:
+            # Check if file would be skipped (incomplete metadata)
+            basename = os.path.basename(fpath)
+            # Determine effective template (same logic as generate_new_name)
+            if pattern:
+                if not meta.get('is_series') and (_template_uses(pattern, 'season') or _template_uses(pattern, 'episode')):
+                    _effective = '{title} ({year}).{ext}'  # minimal movie fallback
+                else:
+                    _effective = pattern
             else:
-                _effective = pattern
-        else:
-            _effective = TEMPLATE_SERIES if meta.get('is_series') else TEMPLATE_MOVIE
+                _effective = TEMPLATE_SERIES if meta.get('is_series') else TEMPLATE_MOVIE
 
-        skip_reason = ''
-        if meta.get('_skip'):
-            skip_reason = meta.get('_skip_reason', 'skipped by user request')
-        elif not meta.get('title') or len(meta.get('title', '') or '') < 2:
-            skip_reason = 'could not determine title (use -t NAME)'
-        elif _template_uses(_effective, 'season') and not meta.get('season'):
-            skip_reason = 'could not determine season (use -sn N)'
-        elif _template_uses(_effective, 'episode') and not meta.get('episode'):
-            skip_reason = 'could not determine episode'
-        # Allow missing ep_title — _format_template handles the gap
+            skip_reason = ''
+            if meta.get('_skip'):
+                skip_reason = meta.get('_skip_reason', 'skipped by user request')
+            elif not meta.get('title') or len(meta.get('title', '') or '') < 2:
+                skip_reason = 'could not determine title (use -t NAME)'
+            elif _template_uses(_effective, 'season') and not meta.get('season'):
+                skip_reason = 'could not determine season (use -sn N)'
+            elif _template_uses(_effective, 'episode') and not meta.get('episode'):
+                skip_reason = 'could not determine episode'
+            # Allow missing ep_title — _format_template handles the gap
 
-        if skip_reason:
-            print(f'  ⚠ {basename}', file=sys.stderr)
-            print(f'    skipped — {skip_reason}', file=sys.stderr)
-            continue
+            if skip_reason:
+                print(f'  ⚠ {basename}', file=sys.stderr)
+                print(f'    skipped — {skip_reason}', file=sys.stderr)
+                continue
 
-        if not new_name or new_name == basename:
-            if verbose:
-                print(f'  = {basename} (unchanged)')
-            continue
+            if not new_name or new_name == basename:
+                if verbose:
+                    print(f'  = {basename} (unchanged)')
+                continue
 
-        success = rename_file(fpath, new_name, dry_run, reserved=reserved)
-        if success or dry_run:
-            renamed += 1
+            success = rename_file(fpath, new_name, dry_run, reserved=reserved)
+            if success or dry_run:
+                renamed += 1
+    except KeyboardInterrupt:
+        print('\nInterrupted during rename pass.', file=sys.stderr)
+        print(f'Renamed {renamed}/{total} files before interrupt.')
 
     return renamed, total

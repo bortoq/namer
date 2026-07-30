@@ -125,18 +125,22 @@ def main(argv: list = None) -> int:
         print(f'error: directory not found: {directory}', file=sys.stderr)
         return 1
 
-    renamed, total = process_directory(
-        directory=directory,
-        known_title=known,
-        pattern=args.pattern,
-        tmdb_key=args.tmdb_key,
-        season_number=args.season_number,
-        dry_run=args.dry_run,
-        recursive=True,
-        verbose=args.verbose,
-        language=args.language,
-        language_explicit=_lang_explicit,
-    )
+    try:
+        renamed, total = process_directory(
+            directory=directory,
+            known_title=known,
+            pattern=args.pattern,
+            tmdb_key=args.tmdb_key,
+            season_number=args.season_number,
+            dry_run=args.dry_run,
+            recursive=True,
+            verbose=args.verbose,
+            language=args.language,
+            language_explicit=_lang_explicit,
+        )
+    except KeyboardInterrupt:
+        print('\nInterrupted.', file=sys.stderr)
+        return 130
 
     if args.dry_run:
         print(f'\nDry-run: {renamed}/{total} files would be renamed.')
