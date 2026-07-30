@@ -1,6 +1,7 @@
 """Tests for namer.parser."""
 
 import sys
+import pytest
 sys.path.insert(0, '/home/user/work/namer')
 
 from namer.parser import (
@@ -115,7 +116,7 @@ class TestParseFile:
     def test_series(self):
         meta = parse_file("Game.of.Thrones.S01E01.1080p.BluRay.x264.DTS.mkv")
         assert meta['season'] == 1
-        assert meta['episode'] == '01'
+        assert meta['episode'] == 1
         assert meta['ext'] == "mkv"
         assert meta['is_series'] is True
         assert meta['year'] == 0  # no year in this filename
@@ -247,7 +248,7 @@ class TestBugFixes:
         )
         assert meta["is_series"] is True, "should be series"
         assert meta["season"] == 1
-        assert meta["episode"] == "01"
+        assert meta["episode"] == 1
         assert meta["title"] == "Mieruko chan", f"title={meta['title']!r}"
         assert "01" not in meta["title"], f"episode leaked into title: {meta['title']!r}"
 
@@ -257,7 +258,7 @@ class TestBugFixes:
             "Mieruko-chan - 02 (WEBRip 1920x1080 x264 AAC Rus + Jap).mkv"
         )
         assert meta["is_series"] is True
-        assert meta["episode"] == "02"
+        assert meta["episode"] == 2
         assert meta["title"] == "Mieruko chan"
 
 
@@ -294,7 +295,7 @@ class TestBugFixes:
         )
         assert meta["is_series"] is True
         assert meta["season"] == 1
-        assert meta["episode"] == "01"
+        assert meta["episode"] == 1
         assert meta["title"] == "Monster", f"title={meta['title']!r}"
 
     def test_clean_title_episode_in_brackets(self):
@@ -304,3 +305,56 @@ class TestBugFixes:
         )
         assert t == "Monster", f"clean_title={t!r}"
         assert "01" not in t
+
+
+# ── NMR-005 regression tests: clean_title + parse_file ─────────────────────
+
+class TestNmr005Regression:
+    """Verify clean_title and parse_file handle legitimate titles correctly.
+
+    These tests guard against regressions where clean_title was overzealously
+    stripping parts of legitimate movie/show titles (NMR-005).
+    """
+
+    # (input_filename, expected_title, expected_year)
+    PARSE_CASES = [
+        ("1917.2019.mkv", "1917", 2019),
+        ("2001.A.Space.Odyssey.1968.mkv", "2001 A Space Odyssey", 1968),
+        ("Spider-Man.mkv", "Spider Man", 0),
+        ("X-Men.mkv", "X Men", 0),
+        ("Uncut.Gems.2019.mkv", "Uncut Gems", 2019),
+        ("Extended.Family.S01E01.mkv", "Extended Family", 0),
+        ("Cam.2018.mkv", "Cam", 2018),
+    ]
+
+    @staticmethod
+    def test_clean_title_no_destructive_stripping():
+        """clean_title preserves full title for known NMR-005 cases."""
+        cases = [
+            ("1917.2019.mkv", "1917"),
+            ("2001.A.Space.Odyssey.1968.mkv", "2001 A Space Odyssey"),
+            ("Spider-Man.mkv", "Spider Man"),
+            ("X-Men.mkv", "X Men"),
+            ("Uncut.Gems.2019.mkv", "Uncut Gems"),
+            ("Extended.Family.S01E01.mkv", "Extended Family"),
+            ("Cam.2018.mkv", "Cam"),
+        ]
+        for fname, expected in cases:
+            t = clean_title(fname)
+            assert t == expected, (
+                f"clean_title({fname!r}) = {t!r}, expected {expected!r}"
+            )
+
+    @staticmethod
+    @pytest.mark.parametrize("fname,exp_title,exp_year", PARSE_CASES)
+    def test_parse_file_title_and_year(fname, exp_title, exp_year):
+        """parse_file returns correct (title, year) for NMR-005 cases."""
+        meta = parse_file(fname)
+        title = meta.get("title", "")
+        year = meta.get("year", 0)
+        assert title == exp_title, (
+            f"parse_file({fname!r}) title = {title!r}, expected {exp_title!r}"
+        )
+        assert year == exp_year, (
+            f"parse_file({fname!r}) year = {year}, expected {exp_year}"
+        )

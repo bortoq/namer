@@ -46,8 +46,8 @@ def build_parser() -> argparse.ArgumentParser:
             'Custom rename pattern. '
             'Fields: {title} {dot_title} {season} {episode} {ext} {year} {audio_lang} {sub_lang} {channels} '
             '{quality} {resolution} {source} {codec} {audio} {hdr} {mod}. '
-            'Default movie:  "{title} ({year}) [{quality}].{ext}"  '
-            'Default series: "{dot_title}.S{season:02d}E{episode:02d}.{quality}.{ext}"'
+            'Default movie:  "{title} ({year}) {mod}.{ext}"  '
+            'Default series: "{season:02d}.{episode:02d}. {ep_title}.{ext}"'
         ),
     )
     p.add_argument(
@@ -121,6 +121,10 @@ def main(argv: list = None) -> int:
     raw = args.title.strip() if args.title else (args.title_opt.strip() if args.title_opt else '')
     known = clean_title(raw) if raw else ''
 
+    if not os.path.isdir(directory):
+        print(f'error: directory not found: {directory}', file=sys.stderr)
+        return 1
+
     renamed, total = process_directory(
         directory=directory,
         known_title=known,
@@ -139,8 +143,6 @@ def main(argv: list = None) -> int:
     else:
         if renamed:
             print(f'\nRenamed {renamed}/{total} files.')
-        else:
-            print(f'\nNo files were renamed ({total} found).')
 
     return 0
 

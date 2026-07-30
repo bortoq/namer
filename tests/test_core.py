@@ -30,7 +30,7 @@ class TestGenerateNewName:
     def test_custom_pattern(self):
         name, meta = generate_new_name(
             "Show.S01E01.1080p.mkv",
-            pattern="{title}.S{season:02d}E{episode}.{ext}"
+            pattern="{title}.S{season:02d}E{episode:02d}.{ext}"
         )
         assert name == "Show.S01E01.mkv"
 
@@ -74,7 +74,7 @@ class TestGenerateNewNameWithFlags:
         name, meta = generate_new_name(
             "Show.S02E01.mkv",
             season_number=3,
-            pattern="{season}.{episode}.{ext}"
+            pattern="{season}.{episode:02d}.{ext}"
         )
         # Season 3 overrides auto-detected season 2
         assert meta['season'] == 3
@@ -117,7 +117,7 @@ class TestDirectoryHeuristics:
             assert meta["season"] == 7, f"season={meta['season']}"
             assert meta["title"] == "Natsume Yuujinchou", f"title={meta['title']!r}"
             assert meta["is_series"] is True
-            assert meta["episode"] == "01"
+            assert meta["episode"] == 1
 
     def test_season_from_directory_season_word(self):
         """Season detected from 'Season 2' pattern in directory."""
@@ -131,7 +131,7 @@ class TestDirectoryHeuristics:
                 f.write('dummy')
             name, meta = generate_new_name(fpath)
             assert meta["season"] == 2, f"season={meta['season']}"
-            assert meta["episode"] == "03"
+            assert meta["episode"] == 3
 
     def test_title_from_directory_preferred_over_filename(self):
         """Clean directory title preferred when filename has extra words."""

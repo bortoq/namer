@@ -30,9 +30,12 @@ def find_video_files(directory: str, recursive: bool = True) -> List[str]:
             # Filter hidden dirs in-place
             dirs[:] = [d for d in dirs if not _skip_dir(d)]
             for name in names:
+                fpath = os.path.join(root, name)
+                if not os.path.isfile(fpath):
+                    continue
                 ext = os.path.splitext(name)[1].lower()
                 if ext in VIDEO_EXTENSIONS:
-                    files.append(os.path.join(root, name))
+                    files.append(fpath)
     else:
         for name in os.listdir(directory):
             fpath = os.path.join(directory, name)

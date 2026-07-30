@@ -2,12 +2,22 @@
 
 import os
 import re
+import string
 import sys
 from typing import List, Tuple
 
 from namer import settings
 from namer.parser import parse_file
 from namer.settings import TEMPLATE_MOVIE, TEMPLATE_SERIES
+
+
+def _template_uses(template: str, field: str) -> bool:
+    """Check if a format-string *template* uses *field* (with any format spec)."""
+    for _, field_name, _, _ in string.Formatter().parse(template):
+        if field_name == field:
+            return True
+    return False
+
 
 def _sanitize_filename(name: str) -> str:
     """Replace filesystem-invalid characters with safe alternatives.
@@ -108,7 +118,7 @@ def generate_new_name(
     try:
         from namer.ffprobe import get_format_metadata
         ff_tags = get_format_metadata(file_path)
-        if ff_tags.get('show_name'):
+        if ff_tags.get('show_name') and not known_title:
             meta['title'] = ff_tags['show_name']
             meta['dot_title'] = re.sub(r'\s+', '.', ff_tags['show_name'].strip())
         if ff_tags.get('ep_title') and not filename_ep_title:
@@ -210,7 +220,7 @@ def generate_new_name(
 
     # 2c. Last-resort fallback (only if no ep_title at all)
     if not meta.get('ep_title') and meta['is_series'] and meta['episode']:
-        meta['ep_title'] = 'Episode ' + str(meta['episode'])
+        meta['ep_title'] = f'Episode {meta["episode"]:02d}'
 
     # ── Phase 3: Technical metadata (ffprobe) ─────────────────────────
     try:
@@ -240,7 +250,7 @@ def generate_new_name(
         # User provided a custom template.
         # If file is a movie but template expects series fields,
         # fall back to the movie template.
-        if not meta.get('is_series') and ('{season}' in pattern or '{episode}' in pattern):
+        if not meta.get('is_series') and (_template_uses(pattern, 'season') or _template_uses(pattern, 'episode')):
             template = '{title} ({year}).{ext}'  # minimal movie fallback
         else:
             template = pattern
@@ -250,11 +260,11 @@ def generate_new_name(
     # ── Validation: skip if metadata too incomplete ─────────────────
     if not meta.get('title') or len(meta['title']) < 2:
         return basename, meta
-    if '{season}' in template and not meta.get('season'):
+    if _template_uses(template, 'season') and not meta.get('season'):
         return basename, meta
-    if '{episode}' in template and not meta.get('episode'):
+    if _template_uses(template, 'episode') and not meta.get('episode'):
         return basename, meta
-    if '{ep_title}' in template and not meta.get('ep_title'):
+    if _template_uses(template, 'ep_title') and not meta.get('ep_title'):
         return basename, meta
 
     new_name = _format_template(template, meta)
@@ -268,33 +278,45 @@ def rename_file(
     file_path: str,
     new_name: str,
     dry_run: bool = False,
+    reserved: set = None,
 ) -> bool:
     """Rename *file_path* to *new_name* in the same directory.
 
+    Sanitizes the new name and resolves conflicts BEFORE dry-run or rename,
+    so dry-run shows the exact destination that would be used.
+
+    If *reserved* set is provided, it tracks destinations claimed within
+    a batch to prevent intra-batch collisions in dry-run mode.
     Returns True on success (or simulated success in dry-run).
     """
     directory = os.path.dirname(file_path) or '.'
-    dest = os.path.join(directory, new_name)
+
+    # Step 1: sanitize immediately (before conflict check)
+    safe_name = _sanitize_filename(new_name)
+    dest = os.path.join(directory, safe_name)
 
     if file_path == dest:
         return True
+
+    # Step 2: resolve conflicts (checks both filesystem and reserved set)
+    dest_basename = safe_name
+    if os.path.exists(dest) or (reserved is not None and dest_basename in reserved):
+        base, ext = os.path.splitext(safe_name)
+        counter = 1
+        while True:
+            candidate = f'{base}_{counter}{ext}'
+            candidate_path = os.path.join(directory, candidate)
+            if not os.path.exists(candidate_path) and (reserved is None or candidate not in reserved):
+                dest_basename = candidate
+                dest = candidate_path
+                break
+            counter += 1
+
+    if reserved is not None:
+        reserved.add(dest_basename)
 
     if dry_run:
-        print(f'  mv "{os.path.basename(file_path)}" → "{new_name}"')
-        return True
-
-    # Conflict check
-    if os.path.exists(dest):
-        base, ext = os.path.splitext(new_name)
-        counter = 1
-        while os.path.exists(os.path.join(directory, f'{base}_{counter}{ext}')):
-            counter += 1
-        dest = os.path.join(directory, f'{base}_{counter}{ext}')
-
-    # Belt-and-suspenders: final sanitisation (basename only)
-    dest = os.path.join(os.path.dirname(dest) or '.', _sanitize_filename(os.path.basename(dest)))
-
-    if file_path == dest:
+        print(f'  mv "{os.path.basename(file_path)}" → "{dest_basename}"')
         return True
 
     # Safety: verify source still exists BEFORE rename
@@ -308,7 +330,7 @@ def rename_file(
         return True
     except OSError as e:
         print(f'  ✗ Rename failed: {e}', file=sys.stderr)
-        # ── Data-loss guard: verify source survived failed rename ──
+        # —— Data-loss guard: verify source survived failed rename ——
         if not os.path.exists(file_path):
             print(f'  ✗ CRITICAL: source file LOST after failed rename: {file_path}', file=sys.stderr)
             print(f'  ✗ Attempted destination: {dest}', file=sys.stderr)
@@ -369,12 +391,13 @@ def process_directory(
 
     # ── Second pass: perform renames, warn on skips ────────────────────
     renamed = 0
+    reserved: set = set()  # track claimed destinations for intra-batch conflict
     for fpath, new_name, meta in results:
         # Check if file would be skipped (incomplete metadata)
         basename = os.path.basename(fpath)
         # Determine effective template (same logic as generate_new_name)
         if pattern:
-            if not meta.get('is_series') and ('{season}' in pattern or '{episode}' in pattern):
+            if not meta.get('is_series') and (_template_uses(pattern, 'season') or _template_uses(pattern, 'episode')):
                 _effective = '{title} ({year}).{ext}'  # minimal movie fallback
             else:
                 _effective = pattern
@@ -386,11 +409,11 @@ def process_directory(
             skip_reason = meta.get('_skip_reason', 'skipped by user request')
         elif not meta.get('title') or len(meta.get('title', '') or '') < 2:
             skip_reason = 'could not determine title (use -t NAME)'
-        elif '{season}' in _effective and not meta.get('season'):
+        elif _template_uses(_effective, 'season') and not meta.get('season'):
             skip_reason = 'could not determine season (use -sn N)'
-        elif '{episode}' in _effective and not meta.get('episode'):
+        elif _template_uses(_effective, 'episode') and not meta.get('episode'):
             skip_reason = 'could not determine episode'
-        elif '{ep_title}' in _effective and not meta.get('ep_title'):
+        elif _template_uses(_effective, 'ep_title') and not meta.get('ep_title'):
             skip_reason = 'could not determine episode title'
 
         if skip_reason:
@@ -403,7 +426,7 @@ def process_directory(
                 print(f'  = {basename} (unchanged)')
             continue
 
-        success = rename_file(fpath, new_name, dry_run)
+        success = rename_file(fpath, new_name, dry_run, reserved=reserved)
         if success or dry_run:
             renamed += 1
 

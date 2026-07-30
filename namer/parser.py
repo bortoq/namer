@@ -26,6 +26,13 @@ _SEASON_DOT_EPISODE = re.compile(
     r'(?:^|[.\s-])(?P<season>\d{1,2})\.(?P<episode>\d{2,3})\.',
 )
 
+# NxNN format: 1x02, 2x01, etc.
+_SERIES_X_FORMAT = re.compile(
+    r'(?:^|[.\s-])(?P<season>\d{1,2})x(?P<episode>\d{2,3})',
+    re.IGNORECASE,
+)
+
+
 # Episode in brackets: [01] or [01_of_74] (common anime format)
 _EPISODE_IN_BRACKETS = re.compile(
     r'\[(?P<episode>\d{2,3})(?:_of_\d+)?\]',
@@ -56,7 +63,7 @@ _QUALITY_TOKENS = re.compile(
 
 _SOURCE_TOKENS = re.compile(
     r'\b(?:BluRay|WEB[-_. ]?DL|WEBRip|BDRip|BRRip|HDTV|DVD|DVDR|'
-    r'SCREENER|TELESYNC|TELECINE|CAM|WORKPRINT|PDTV|SDTV|TVRip)\b',
+    r'SCREENER|TELESYNC|TELECINE|WORKPRINT|PDTV|SDTV|TVRip)\b',
     re.IGNORECASE
 )
 
@@ -73,6 +80,13 @@ def parse_season_episode(file_name: str) -> Tuple[Optional[int], Optional[int]]:
     if m:
         season = int(m.group('season'))
         episode = int(m.group('episode')) if m.group('episode') else None
+        return season, episode
+
+    # NxNN format: 1x02, 2x01, etc.
+    m = _SERIES_X_FORMAT.search(file_name)
+    if m:
+        season = int(m.group('season'))
+        episode = int(m.group('episode'))
         return season, episode
 
     # Fallback: standalone episode number like " - 01"
@@ -107,9 +121,11 @@ def extract_ext(file_name: str) -> str:
 
 
 def extract_year(file_name: str) -> Optional[int]:
-    """Extract a 4-digit year from the filename."""
-    m = _YEAR_PATTERN.search(file_name)
-    return int(m.group('year')) if m else None
+    """Extract release year (last 19xx/20xx from filename)."""
+    matches = list(_YEAR_PATTERN.finditer(file_name))
+    if matches:
+        return int(matches[-1].group('year'))
+    return None
 
 
 def clean_title(file_name: str) -> str:
@@ -129,9 +145,20 @@ def clean_title(file_name: str) -> str:
     name = _SERIES_PATTERN.sub('', name)
     name = _EPISODE_FALLBACK.sub('', name)
     name = _SEASON_DOT_EPISODE.sub('', name)
+    name = _SERIES_X_FORMAT.sub('', name)
 
-    # Remove year
-    name = _YEAR_PATTERN.sub('', name)
+    # Remove only the last year (release year), keep earlier years like "2001"
+    years = list(_YEAR_PATTERN.finditer(name))
+    if years:
+        last_year = years[-1]
+        name = name[:last_year.start()] + name[last_year.end():]
+
+    # Check for release markers BEFORE removal (needed for modifier/group guards)
+    has_release_markers = bool(
+        _QUALITY_TOKENS.search(name)
+        or _SOURCE_TOKENS.search(name)
+        or _YEAR_PATTERN.search(name)
+    )
 
     # Remove quality/resolution/codec tokens
     name = _QUALITY_TOKENS.sub('', name)
@@ -139,13 +166,15 @@ def clean_title(file_name: str) -> str:
     # Remove source tokens
     name = _SOURCE_TOKENS.sub('', name)
 
-    # Remove modifiers
-    name = strip_modifiers(name)
+    # Remove modifiers only if release markers present
+    # (avoids eating legitimate title words like "Extended" in "Extended Family")
+    if has_release_markers:
+        name = strip_modifiers(name)
 
-    # Remove release group at end: -GROUP (common p2p patterns)
-    # Matches dash optionally surrounded by dots/spaces (e.g. ".-.GetSchwifty")
-    # But requires at least one dash — avoids eating ".Thrones" from "Game.of.Thrones"
-    name = re.sub(r'[-. ]*-[-. ]*[a-zA-Z0-9À-ɏ]{2,15}$', '', name.strip())
+    # Remove release group at end (-GROUP) only if release markers present
+    # Avoids eating legitimate hyphenated words like "Spider-Man", "X-Men".
+    if has_release_markers:
+        name = re.sub(r'[-. ]*-[-. ]*[a-zA-Z0-9À-ɏ]{2,15}$', '', name.strip())
 
     # Remove bracketed / parenthesized groups
     name = re.sub(r'\[.*?\]', '', name)
@@ -155,9 +184,8 @@ def clean_title(file_name: str) -> str:
     name = re.sub(r'[._-]', ' ', name)
     name = re.sub(r'\s+', ' ', name).strip()
 
-    # Preserve original casing (user can pass title arg for custom name)
-
     return name
+
 
 
 
@@ -309,7 +337,10 @@ def extract_ep_title_from_filename(file_name: str) -> str:
     # Try SxxExx format
     m = _SERIES_PATTERN.search(name)
     if m:
-        after = _clean_ep_title(name[m.end():])
+        after = name[m.end():]
+        # Strip remaining E markers from multi-episode (e.g. "E02" from "S01E01E02")
+        after = re.sub(r'\s*E\d{1,3}\s*', '', after, flags=re.IGNORECASE).strip()
+        after = _clean_ep_title(after)
         if after and len(after) >= 2:
             return after
 
@@ -362,7 +393,7 @@ def parse_file(file_path: str) -> dict:
         'dot_title': dot_title,
         'dot_quality': dot_quality,
         'season': season or 0,
-        'episode': f'{episode:02d}' if episode else 0,
+        'episode': episode or 0,
         'ext': ext,
         'year': year or 0,
         'quality': quality_label,

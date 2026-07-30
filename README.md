@@ -38,12 +38,16 @@ namer -v
 | `{codec}`    | Codec                                 | x264              |
 | `{audio}`    | Audio codec                           | DTS               |
 | `{hdr}`      | HDR type                              | HDR10             |
-| `{mod}`      | Edition modifiers                     | Extended/Unrated  |
+| `{mod}`        | Edition modifiers                    | Extended/Unrated  |
+| `{ep_title}`   | Episode title (from TMDB)            | Pilot             |
+| `{audio_lang}` | Audio languages (comma-separated)    | jpn,eng           |
+| `{sub_lang}`   | Subtitle languages (comma-separated) | eng               |
+| `{channels}`   | Max audio channels                   | 6                 |
 
 ## Default Templates
 
-**Movie:** `{title} ({year}) [{quality}].{ext}`
-→ `The Matrix (1999) [BluRay 1080p x264].mkv`
+**Movie:** `{title} ({year}) {mod}.{ext}`
+→ `The Matrix (1999) .mkv`
 
-**Series:** `{dot_title}.S{season:02d}E{episode:02d}.{dot_quality}.{ext}`
-→ `Breaking.Bad.S01E01.BluRay.1080p.x264.mkv`
+**Series:** `{season:02d}.{episode:02d}. {ep_title}.{ext}`
+→ `01.01. Pilot.mkv`

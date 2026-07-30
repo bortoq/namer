@@ -30,4 +30,4 @@ VIDEO_EXTENSIONS = {
 #
 
 TEMPLATE_MOVIE = '{title} ({year}) {mod}.{ext}'
-TEMPLATE_SERIES = '{season:02d}.{episode}. {ep_title}.{ext}'
+TEMPLATE_SERIES = '{season:02d}.{episode:02d}. {ep_title}.{ext}'

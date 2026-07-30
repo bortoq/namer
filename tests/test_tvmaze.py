@@ -13,7 +13,7 @@ class TestEnrichEpisodeTitles:
             'title': 'The Summer Hikaru Died',
             'is_series': True,
             'season': 1,
-            'episode': '01',
+            'episode': 1,
         }
         enrich_episode_titles(meta)
         assert meta['ep_title'] == 'Replacement'
@@ -24,7 +24,7 @@ class TestEnrichEpisodeTitles:
             'title': 'XyzzyNoMatch',
             'is_series': True,
             'season': 1,
-            'episode': '01',
+            'episode': 1,
         }
         enrich_episode_titles(meta)
         assert meta.get('ep_title', '') == ''
@@ -41,7 +41,7 @@ class TestEnrichEpisodeTitles:
             'title': 'The Summer Hikaru Died',
             'is_series': True,
             'season': 1,
-            'episode': '05',
+            'episode': 5,
         }
         enrich_episode_titles(meta)
         assert meta['ep_title'] == 'Wig Ghost'

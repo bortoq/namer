@@ -6,7 +6,7 @@ Typical usage::
 
     from namer.tvmaze import enrich_episode_titles
 
-    meta = {'title': 'The Summer Hikaru Died', 'season': 1, 'episode': '01'}
+    meta = {'title': 'The Summer Hikaru Died', 'season': 1, 'episode': 1}
     enrich_episode_titles(meta)
     # meta['ep_title'] == 'Replacement'
 """
@@ -185,7 +185,7 @@ def enrich_episode_titles(meta: Dict, protect_filename: bool = False, language: 
         return meta
 
     season = int(meta['season']) if not isinstance(meta['season'], int) else meta['season']
-    episode = int(meta['episode']) if not isinstance(meta['episode'], int) else int(meta['episode'])
+    episode = meta['episode']  # already int
 
     # If protect_filename is True, keep what we already have
     had_ep_title = bool(meta.get('ep_title'))
