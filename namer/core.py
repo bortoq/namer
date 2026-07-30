@@ -168,7 +168,7 @@ def generate_new_name(
     }
     _SEROMS = {'i': 1, 'ii': 2, 'iii': 3, 'iv': 4, 'v': 5,
                'vi': 6, 'vii': 7, 'viii': 8, 'ix': 9, 'x': 10}
-    if meta.get('is_series') and (not meta.get('season') or meta['season'] in (0, 1)):
+    if meta.get('is_series') and (meta.get('season') is None or meta['season'] in (0, 1)):
         _start = os.path.dirname(os.path.abspath(file_path))
         parent = _start
         while parent:
@@ -196,6 +196,10 @@ def generate_new_name(
                 if s:
                     meta['season'] = s
                     break
+            # "Specials" directory -> season 0 (standard convention)
+            if dirname.lower() in ('specials', 'special'):
+                meta['season'] = 0
+                break
             # Compare dir with its parent: if dir starts with parent name,
             # the extra suffix may contain the season indicator.
             # Catches anime like "Natsume Yuujinchou Shi" (parent "Natsume Yuujinchou").
@@ -230,6 +234,13 @@ def generate_new_name(
                     meta['season'] = s
                     break
             parent = os.path.dirname(parent)
+
+    # Special episodes (OVA, [Special], etc.): map to season 0.
+    # Only overrides the default season=1; explicit -sn or directory
+    # detection takes precedence.
+    if meta.get('is_special') and meta.get('is_series') and meta.get('season', 0) == 1:
+        meta['season'] = 0
+
     # ── Phase 2: Episode title enrichment ──────────────────────────────
     # ── Phase 2: Title & episode enrichment (multiple sources) ─────
 
@@ -315,9 +326,9 @@ def generate_new_name(
     # ── Validation: skip if metadata too incomplete ─────────────────
     if not meta.get('title') or len(meta['title']) < 2:
         return basename, meta
-    if _template_uses(template, 'season') and not meta.get('season'):
+    if _template_uses(template, 'season') and meta.get('season') is None:
         return basename, meta
-    if _template_uses(template, 'episode') and not meta.get('episode'):
+    if _template_uses(template, 'episode') and meta.get('episode') is None:
         return basename, meta
     # Allow missing ep_title — _format_template cleans up the gap
     # (e.g. "01.01. .avi" → "01.01.avi" via double-dot collapse)
@@ -465,9 +476,9 @@ def process_directory(
                 skip_reason = meta.get('_skip_reason', 'skipped by user request')
             elif not meta.get('title') or len(meta.get('title', '') or '') < 2:
                 skip_reason = 'could not determine title (use -t NAME)'
-            elif _template_uses(_effective, 'season') and not meta.get('season'):
+            elif _template_uses(_effective, 'season') and meta.get('season') is None:
                 skip_reason = 'could not determine season (use -sn N)'
-            elif _template_uses(_effective, 'episode') and not meta.get('episode'):
+            elif _template_uses(_effective, 'episode') and meta.get('episode') is None:
                 skip_reason = 'could not determine episode'
             # Allow missing ep_title — _format_template handles the gap
 

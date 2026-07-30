@@ -69,6 +69,15 @@ _SOURCE_TOKENS = re.compile(
 
 # ── Accessory patterns ───────────────────────────────────────────────────
 
+# Episode-type markers: filename contains these → it's a special episode (OVA, etc.)
+# Matches bracketed [Special], [OVA], or standalone .Special./.OVA. patterns
+# in the original filename before clean_title strips brackets.
+_SPECIAL_EPISODE_MARKERS = re.compile(
+    r'\[(?:Special|OVA|OAV|OAD|Extra|Movie|Film|Omake|SP|OVD)\]'
+    r'|\.(?:Special|OVA|OAV|OAD|Extra|Movie|Film|Omake|SP|OVD)\.',
+    re.IGNORECASE
+)
+
 def parse_season_episode(file_name: str) -> Tuple[Optional[int], Optional[int]]:
     """Extract (season, episode) from a filename.
 
@@ -388,10 +397,15 @@ def parse_file(file_path: str) -> dict:
     # Dot-quality: quality label with dots instead of spaces (torrent-style)
     dot_quality = re.sub(r'\s+', '.', quality_label.strip())
 
+    # Check for special episode markers (OVA, Special, etc.) in the
+    # original filename before clean_title strips bracketed content.
+    is_special = bool(_SPECIAL_EPISODE_MARKERS.search(basename))
+
     return {
         'title': title,
         'dot_title': dot_title,
         'dot_quality': dot_quality,
+        'is_special': is_special,
         'season': season or 0,
         'episode': episode or 0,
         'ext': ext,

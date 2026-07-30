@@ -358,3 +358,81 @@ class TestNmr005Regression:
         assert year == exp_year, (
             f"parse_file({fname!r}) year = {year}, expected {exp_year}"
         )
+
+
+class TestSpecialEpisodeDetection:
+    """Tests for [Special]/[OVA] detection in parse_file."""
+
+    def test_regular_episode_not_special(self):
+        """Regular episode without special marker has is_special=False."""
+        from namer.parser import parse_file
+        meta = parse_file("/dummy/Show [01].mkv")
+        assert meta.get('is_special') is False
+
+    def test_bracketed_special(self):
+        """[Special] in filename sets is_special=True."""
+        from namer.parser import parse_file
+        meta = parse_file("/dummy/Show [Special] [01].mkv")
+        assert meta.get('is_special') is True
+
+    def test_bracketed_ova(self):
+        """[OVA] in filename sets is_special=True."""
+        from namer.parser import parse_file
+        meta = parse_file("/dummy/Show [OVA] [01].mkv")
+        assert meta.get('is_special') is True
+
+    def test_bracketed_oav(self):
+        """[OAV] in filename sets is_special=True."""
+        from namer.parser import parse_file
+        meta = parse_file("/dummy/Show [OAV] [01].mkv")
+        assert meta.get('is_special') is True
+
+    def test_bracketed_oad(self):
+        """[OAD] in filename sets is_special=True."""
+        from namer.parser import parse_file
+        meta = parse_file("/dummy/Show [OAD] [01].mkv")
+        assert meta.get('is_special') is True
+
+    def test_bracketed_extra(self):
+        """[Extra] in filename sets is_special=True."""
+        from namer.parser import parse_file
+        meta = parse_file("/dummy/Show [Extra] [01].mkv")
+        assert meta.get('is_special') is True
+
+    def test_bracketed_movie(self):
+        """[Movie] in filename sets is_special=True."""
+        from namer.parser import parse_file
+        meta = parse_file("/dummy/Show [Movie] [01].mkv")
+        assert meta.get('is_special') is True
+
+    def test_bracketed_sp(self):
+        """[SP] in filename sets is_special=True."""
+        from namer.parser import parse_file
+        meta = parse_file("/dummy/Show [SP] [01].mkv")
+        assert meta.get('is_special') is True
+
+    def test_dotted_special(self):
+        """.Special. in filename sets is_special=True."""
+        from namer.parser import parse_file
+        meta = parse_file("/dummy/Show.Special.01.mkv")
+        assert meta.get('is_special') is True
+
+    def test_dotted_ova(self):
+        """.OVA. in filename sets is_special=True."""
+        from namer.parser import parse_file
+        meta = parse_file("/dummy/Show.OVA.01.mkv")
+        assert meta.get('is_special') is True
+
+    def test_special_in_title_word_not_detected(self):
+        """'Special' as part of title (not bracketed/dotted) is NOT flagged."""
+        from namer.parser import parse_file
+        meta = parse_file("/dummy/Special Edition [01].mkv")
+        # "Special Edition" is a common modifier, not a special episode
+        # The title will be cleaned, and is_special should be False
+        assert meta.get('is_special') is False
+
+    def test_ova_in_title_word_not_detected(self):
+        """'Ovation' shouldn't match OVA."""
+        from namer.parser import parse_file
+        meta = parse_file("/dummy/Ovation [01].mkv")
+        assert meta.get('is_special') is False

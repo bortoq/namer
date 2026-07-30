@@ -200,3 +200,60 @@ class TestSeasonFromDirectory:
                 f.write('dummy')
             name, meta = generate_new_name(fpath)
             assert meta["season"] == 2, f"season={meta['season']} expected 2"
+
+
+class TestSpecialEpisodeHandling:
+    """Tests for special episode → season 0 mapping in generate_new_name."""
+
+    def test_regular_keeps_season_1(self):
+        """Regular episode keeps season 1."""
+        name, meta = generate_new_name("Show [01].mkv")
+        assert meta.get('is_special') is False
+        assert meta['season'] == 1
+        assert meta['episode'] == 1
+
+    def test_special_maps_to_season_0(self):
+        """[Special] episode maps to season 0, preventing collision."""
+        name, meta = generate_new_name("Show [Special] [01].mkv")
+        assert meta.get('is_special') is True
+        assert meta['season'] == 0, f"season={meta['season']}"
+        assert meta['episode'] == 1
+        # Must not collide with regular 01.01
+        assert '00.01.' in name, f"name={name!r}"
+
+    def test_ova_maps_to_season_0(self):
+        """[OVA] episode maps to season 0."""
+        name, meta = generate_new_name("Show [OVA] [05].mkv")
+        assert meta.get('is_special') is True
+        assert meta['season'] == 0
+        assert meta['episode'] == 5
+
+    def test_specials_directory_skipped_as_supplementary(self):
+        """'Specials' directory files are flagged supplementary (skipped)."""
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            show_dir = os.path.join(tmpdir, "Show", "Specials")
+            os.makedirs(show_dir)
+            fpath = os.path.join(show_dir, "Show OVA 01.mkv")
+            with open(fpath, 'w') as f:
+                f.write('dummy')
+            name, meta = generate_new_name(fpath)
+            # Supplementary check catches files in 'Specials' directories
+            assert meta.get('_skip') is True, f"_skip={meta.get('_skip')}"
+
+
+    def test_regular_and_special_no_collision(self):
+        """Regular ep 1 and special ep 1 produce different names."""
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            reg = os.path.join(tmpdir, "Show [01].mkv")
+            spec = os.path.join(tmpdir, "Show [Special] [01].mkv")
+            with open(reg, 'w') as f:
+                f.write('dummy')
+            with open(spec, 'w') as f:
+                f.write('dummy')
+            name_reg, meta_reg = generate_new_name(reg)
+            name_spec, meta_spec = generate_new_name(spec)
+            assert name_reg != name_spec, f"collision: {name_reg} == {name_spec}"
+            assert '01.01' in name_reg
+            assert '00.01' in name_spec
