@@ -181,3 +181,126 @@ class TestTitleFromPath:
         meta = parse_file("1.01. Departure.mkv")
         assert meta['title'] == ""  # filename has no show name
         assert meta['ep_title'] == "Departure"
+
+
+class TestBugFixes:
+    """Regression tests for reported bugs."""
+
+    # ── Bug 1: AAC5.1 not cleaned from title ──────────────────────────────
+
+    def test_clean_title_aac51(self):
+        """AAC5.1 should be stripped from title by quality tokens."""
+        result = clean_title(
+            "Bad.Santa.2003.1080p.BluRay.x264.AAC5.1-[YTS.MX] [merged].mkv"
+        )
+        # "AAC5.1" must not appear (neither as "AAC5.1" nor "AAC5 1")
+        assert "AAC" not in result, f"AAC leaked into title: {result!r}"
+        assert result == "Bad Santa", f"Expected 'Bad Santa', got {result!r}"
+
+    def test_parse_file_aac51(self):
+        """parse_file should correctly handle AAC5.1 in filename."""
+        meta = parse_file(
+            "Bad.Santa.2003.1080p.BluRay.x264.AAC5.1-[YTS.MX] [merged].mkv"
+        )
+        assert meta["title"] == "Bad Santa", f"title={meta['title']!r}"
+        assert meta["year"] == 2003
+        assert meta["is_series"] is False
+        # "AAC5.1" must not leak into mod or resolution
+        assert "AAC" not in meta["mod"], f"AAC leaked into mod: {meta['mod']!r}"
+
+    def test_quality_audio_aac51(self):
+        """parse_quality should detect AAC in AAC5.1."""
+        from namer.quality import parse_quality
+        qi = parse_quality("Bad.Santa.2003.1080p.BluRay.x264.AAC5.1-[YTS.MX] [merged].mkv")
+        assert qi.audio == "AAC", f"audio={qi.audio!r}"
+
+    # ── Bug 2: Episode number in parentheses not detected (anime style) ──
+
+    def test_anime_episode_parentheses(self):
+        """Episode number before parentheses should be detected."""
+        s, e = parse_season_episode(
+            "Mieruko-chan - 01 (WEBRip 1920x1080 x264 AAC Rus + Jap).mkv"
+        )
+        assert s == 1, f"season={s}"
+        assert e == 1, f"episode={e}"
+
+    def test_anime_episode_parentheses_v2(self):
+        """Episode with v2 suffix before parentheses."""
+        s, e = parse_season_episode(
+            "Show - 05v2 (WEBRip 1080p).mkv"
+        )
+        assert s == 1
+        assert e == 5
+
+    def test_clean_title_anime_parentheses(self):
+        """Episode number in parentheses should be stripped from title."""
+        result = clean_title(
+            "Mieruko-chan - 01 (WEBRip 1920x1080 x264 AAC Rus + Jap).mkv"
+        )
+        assert result == "Mieruko chan", f"title={result!r}"
+        assert "01" not in result.split(), f"episode number leaked: {result!r}"
+
+    def test_parse_file_anime_parentheses(self):
+        """parse_file should detect series from anime with parens."""
+        meta = parse_file(
+            "Mieruko-chan - 01 (WEBRip 1920x1080 x264 AAC Rus + Jap).mkv"
+        )
+        assert meta["is_series"] is True, "should be series"
+        assert meta["season"] == 1
+        assert meta["episode"] == "01"
+        assert meta["title"] == "Mieruko chan", f"title={meta['title']!r}"
+        assert "01" not in meta["title"], f"episode leaked into title: {meta['title']!r}"
+
+    def test_parse_file_series_with_year_anime(self):
+        """Anime with year in brackets + episode number."""
+        meta = parse_file(
+            "Mieruko-chan - 02 (WEBRip 1920x1080 x264 AAC Rus + Jap).mkv"
+        )
+        assert meta["is_series"] is True
+        assert meta["episode"] == "02"
+        assert meta["title"] == "Mieruko chan"
+
+
+    # ── Bug 3: Episode in brackets [01_of_74] (anime Monster style) ────
+
+    def test_episode_in_brackets_of_n(self):
+        """[01_of_74] format should be detected as episode number."""
+        s, e = parse_season_episode(
+            "Monster_[01_of_74]_[ru_jp]_[animereactor.ru].avi"
+        )
+        assert s == 1, f"season={s}"
+        assert e == 1, f"episode={e}"
+
+    def test_episode_in_brackets_plain(self):
+        """[01] format should be detected as episode number."""
+        s, e = parse_season_episode(
+            "Monster_[01]_[ru_jp].avi"
+        )
+        assert s == 1
+        assert e == 1
+
+    def test_episode_in_brackets_larger(self):
+        """[99_of_99] format with larger number."""
+        s, e = parse_season_episode(
+            "Show_[42_of_99]_[group].mkv"
+        )
+        assert s == 1
+        assert e == 42
+
+    def test_parse_file_episode_in_brackets(self):
+        """parse_file correctly handles [01_of_74] format."""
+        meta = parse_file(
+            "Monster_[01_of_74]_[ru_jp]_[animereactor.ru].avi"
+        )
+        assert meta["is_series"] is True
+        assert meta["season"] == 1
+        assert meta["episode"] == "01"
+        assert meta["title"] == "Monster", f"title={meta['title']!r}"
+
+    def test_clean_title_episode_in_brackets(self):
+        """clean_title strips [01_of_74] brackets content."""
+        t = clean_title(
+            "Monster_[01_of_74]_[ru_jp]_[animereactor.ru].avi"
+        )
+        assert t == "Monster", f"clean_title={t!r}"
+        assert "01" not in t

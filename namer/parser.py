@@ -18,12 +18,17 @@ _SERIES_PATTERN = re.compile(
 #   Matches 2-3 digit number before quality bracket, end of name, or extension.
 #   Excluded: numbers >=1900 (years) and common resolution widths (480/576/720).
 _EPISODE_FALLBACK = re.compile(
-    r'(?:^|[.\s-])(?P<episode>\d{2,3})(?:\s*v\d+)?(?=\s*\[|\s*$|\.\w+$)',
+    r'(?:^|[.\s-])(?P<episode>\d{2,3})(?:\s*v\d+)?(?=\s*[\[\(]|\s*$|\.\w+$)',
 )
 
 # "1.01." or "12.01." format (already-formatted season.episode.)
 _SEASON_DOT_EPISODE = re.compile(
     r'(?:^|[.\s-])(?P<season>\d{1,2})\.(?P<episode>\d{2,3})\.',
+)
+
+# Episode in brackets: [01] or [01_of_74] (common anime format)
+_EPISODE_IN_BRACKETS = re.compile(
+    r'\[(?P<episode>\d{2,3})(?:_of_\d+)?\]',
 )
 
 # Year: 4 digits, not preceded by word char, not followed by letter or "p" or "i"
@@ -38,7 +43,7 @@ _QUALITY_TOKENS = re.compile(
     r'|UHD|4K'
     r'|[xh]\.?26[45]|HEVC|AV1|VP9|Xvid|Divx|AVC'
     r'|DD\W?5[. ]1|DDP?5[. ]1'
-    r'|TrueHD|DTS[ -]HD|DTS|FLAC|AAC|AC3|MP3|PCM|Opus'
+    r'|AAC5[. ]1|TrueHD|DTS[ -]HD|DTS|FLAC|AAC|AC3|MP3|PCM|Opus'
     r'|8bit|10bit|8-bit|10-bit'
     r'|HDR10?|Dolby[. ]?Vision|DOVI|DV|HLG'
     r'|HDR|SDR'
@@ -77,6 +82,13 @@ def parse_season_episode(file_name: str) -> Tuple[Optional[int], Optional[int]]:
         # Filter out years (>=1900) and common resolutions (480/576/720)
         if ep < 1900 and ep not in (480, 576, 720):
             return 1, ep  # default season 1
+
+    # Episode in brackets: [01] or [01_of_74]
+    m = _EPISODE_IN_BRACKETS.search(file_name)
+    if m:
+        ep = int(m.group('episode'))
+        if ep < 1900 and ep not in (480, 576, 720):
+            return 1, ep
 
     # "N.NN." format: already-formatted season.episode.
     m = _SEASON_DOT_EPISODE.search(file_name)
