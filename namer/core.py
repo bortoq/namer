@@ -239,6 +239,7 @@ def generate_new_name(
     # Only overrides the default season=1; explicit -sn or directory
     # detection takes precedence.
     if meta.get('is_special') and meta.get('is_series') and meta.get('season', 0) == 1:
+        meta['_original_season'] = meta['season']
         meta['season'] = 0
 
     # ── Phase 2: Episode title enrichment ──────────────────────────────

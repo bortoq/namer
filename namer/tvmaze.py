@@ -142,22 +142,43 @@ def search_show(title: str, language: str = 'en') -> Optional[int]:
     return None
 
 
-def get_episodes(show_id: int, language: str = 'en') -> List[Dict]:
-    """Return all episodes for *show_id*.
+def get_all_episodes(show_id: int, language: str = 'en') -> List[Dict]:
+    """Return ALL episodes (regular + specials) for *show_id*.
 
-    Each entry:: {'season': 1, 'number': 1, 'name': 'Pilot', …}
+    Fetches each season's full episode list via /seasons/{sid}/episodes,
+    which includes ``insignificant_special`` entries not returned by
+    the top-level /shows/{id}/episodes endpoint.
+
+    Each entry:: {'season': 1, 'number': 1, 'name': 'Pilot', 'type': 'regular'}
+    Specials have ``number: None`` and ``type: 'insignificant_special'``.
+    Returns empty list on any error.
     """
-    data = _api_get(f'/shows/{show_id}/episodes', {'language': language})
-    if not data:
+    seasons = _api_get(f'/shows/{show_id}/seasons')
+    if not seasons:
         return []
+
     result = []
-    for ep in data:
-        result.append({
-            'season': ep.get('season', 0),
-            'number': ep.get('number', 0),
-            'name': ep.get('name', ''),
-        })
+    for season in seasons:
+        sid = season.get('id')
+        if not sid:
+            continue
+        eps = _api_get(f'/seasons/{sid}/episodes', {'language': language})
+        if not eps:
+            continue
+        for ep in eps:
+            result.append({
+                'season': ep.get('season', 0),
+                'number': ep.get('number'),  # may be None for specials
+                'name': ep.get('name', ''),
+                'type': ep.get('type', 'regular'),
+            })
     return result
+
+
+def get_episodes(show_id: int, language: str = 'en') -> List[Dict]:
+    """Return only regular episodes (backward-compat wrapper)."""
+    return [ep for ep in get_all_episodes(show_id, language)
+            if ep.get('type') == 'regular']
 
 
 def enrich_episode_titles(meta: Dict, protect_filename: bool = False, language: str = 'en') -> Dict:
@@ -177,7 +198,7 @@ def enrich_episode_titles(meta: Dict, protect_filename: bool = False, language: 
     """
     if not meta.get('is_series'):
         return meta
-    if not meta.get('season') or not meta.get('episode'):
+    if meta.get('season') is None or not meta.get('episode'):
         return meta
 
     title = meta.get('title', '') or meta.get('show', '')
@@ -196,6 +217,7 @@ def enrich_episode_titles(meta: Dict, protect_filename: bool = False, language: 
 
     # Cache hit? (include language in key)
     cache_key = f"{title.lower().strip()}:{language}"
+    show_id = None
     if cache_key in cache:
         episodes = cache[cache_key]
     else:
@@ -208,11 +230,37 @@ def enrich_episode_titles(meta: Dict, protect_filename: bool = False, language: 
         cache[cache_key] = episodes
         _save_cache(cache)
 
+    # If we didn't search above (cache hit), try to get show_id now
+    if show_id is None:
+        show_id = search_show(title, language)
+
+    # Also fetch/cache ALL episodes (incl. specials) for specials lookup.
+    # Stored under a separate key to not break existing cache entries.
+    all_key = cache_key + ':all'
+    if all_key not in cache and show_id:
+        all_eps = get_all_episodes(show_id, language)
+        if all_eps:
+            cache[all_key] = all_eps
+            _save_cache(cache)
+
     # Find the matching episode
-    for ep in episodes:
-        if ep['season'] == season and ep['number'] == episode:
-            if ep['name']:
-                meta['ep_title'] = ep['name']
-            break
+    if meta.get('is_special'):
+        # Specials match by positional index (episode N -> Nth special).
+        # Only works when get_all_episodes was used (not legacy cache).
+        all_eps = cache.get(cache_key + ':all')
+        if all_eps:
+            specials = [ep for ep in all_eps if ep.get('type') != 'regular']
+            idx = episode - 1  # 1-based -> 0-based
+            if 0 <= idx < len(specials):
+                name = specials[idx].get('name')
+                if name:
+                    meta['ep_title'] = name
+    else:
+        # Regular episodes match by season + number
+        for ep in episodes:
+            if ep['season'] == season and ep['number'] == episode:
+                if ep['name']:
+                    meta['ep_title'] = ep['name']
+                break
 
     return meta
