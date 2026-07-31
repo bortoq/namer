@@ -1,13 +1,12 @@
 """Live progress display for batch operations.
 
-One file = one line.  Lines accumulate: finished files stay visible and
-scroll with the terminal, the summary is always the last line.  On a TTY
-the lines are redrawn in place on stderr using ANSI cursor moves
-(throttled to ~10 Hz); once the region is taller than the terminal only
-the visible tail is rewritten and the older lines scroll into the
-terminal's scrollback.  On a pipe or file a compact line is logged per
-completed file instead.  Every state change is guarded by a lock, so
-worker threads may update freely.
+One file = one terminal row.  Each row is printed when the file is claimed
+and rewritten in place (ANSI cursor moves on a TTY) as the file advances
+through the pipeline stages.  When the batch is taller than the terminal
+the oldest rows scroll off the top into the scrollback, exactly like any
+ordinary CLI tool — nothing is ever erased.  On a pipe or file a compact
+line is logged per completed file instead.  Every state change is guarded
+by a lock, so worker threads may update freely.
 
 The caller prints diagnostics (skip reasons) to stderr after ``close()``.
 """
@@ -29,7 +28,7 @@ _BAR_EMPTY = '\u2591'    # ░
 _ELLIPSIS = '\u2026'     # …
 _ARROW = ' \u2192 '      # →
 _BAR_WIDTH = 20
-_THROTTLE = 0.1          # seconds between redraws
+_THROTTLE = 0.1          # seconds between in-place redraws
 
 
 def _char_width(ch: str) -> int:
@@ -59,16 +58,8 @@ def truncate(text: str, max_width: int) -> str:
     return result + _ELLIPSIS
 
 
-def visible_window(lines, height: int) -> list:
-    """Tail of *lines* that fits the terminal: the last *height* rows.
-
-    Older rows are left in the terminal scrollback and are not redrawn.
-    """
-    return lines[-min(len(lines), height):]
-
-
 class Task:
-    """One file's progress line.  All methods are thread-safe."""
+    """One file's progress row.  All methods are thread-safe."""
 
     __slots__ = ('progress', 'index', 'total', 'basename', 'new_name',
                  'stage', 'status', 'state')
@@ -104,21 +95,19 @@ class Task:
             self.progress._touch_locked()
 
     def park(self):
-        """Generation finished; the line stays and shows the rendered name."""
+        """Generation finished; the row stays and shows the rendered name."""
         with self.progress._lock:
             if self.state != 'active':
                 return
             self.state = 'parked'
-            self.progress._queued += 1
             self.progress._touch_locked()
 
     def unpark(self, action: str = None):
-        """Bring the line back for the rename pass."""
+        """Bring the row back for the rename pass."""
         with self.progress._lock:
             if self.state != 'parked':
                 return
             self.state = 'active'
-            self.progress._queued -= 1
             if action:
                 idx = _STAGE_IDX.get(action)
                 if idx is not None and idx > self.stage:
@@ -126,15 +115,12 @@ class Task:
             self.progress._touch_locked()
 
     def finish(self, status: str):
-        """Mark the file processed; its line stays on screen (scrolls)."""
+        """Mark the file processed; its row stays on screen forever."""
         with self.progress._lock:
             if self.state == 'done':
                 return
-            if self.state == 'parked':
-                self.progress._queued -= 1
             self.state = 'done'
             self.status = status
-            self.progress._done += 1
             self.progress._touch_locked()
             if not self.progress._use_ansi:
                 line = f'  {status} [{self.index}/{self.total}] {self.basename}'
@@ -144,11 +130,15 @@ class Task:
 
 
 class Progress:
-    """Batch progress: one line per file (finished ones stay visible).
+    """Batch progress: one row per file, rows scroll like a plain CLI.
+
+    Rows are appended at the bottom (so the terminal scrolls the oldest
+    ones into the scrollback) and only the *changed* rows are rewritten
+    in place on a TTY; nothing is erased.
 
     Args:
         total: Number of files in the batch.
-        mode:  Bottom-line label ('dry-run' or 'rename').
+        mode:  Kept for backwards compatibility (unused).
         stream: Where to draw (defaults to stderr).
         enabled: Force live region on/off; None = auto-detect TTY.
     """
@@ -163,10 +153,10 @@ class Progress:
         self._lock = threading.Lock()
         self._tasks = {}      # index -> Task
         self._order = []      # claim order of indices
-        self._done = 0
-        self._queued = 0      # parked, awaiting the rename pass
+        self._rendered = []   # last rendered text per row (parallel to _order)
         self._closed = False
-        self._drawn = 0       # lines rendered so far (never shrinks)
+        self._drawn = 0       # rows on screen; never shrinks
+        self._cursor_hidden = False
         self._dirty = False
         self._last_render = 0.0
         self._timer = None
@@ -174,41 +164,58 @@ class Progress:
     # ── public API ───────────────────────────────────────────────────────
 
     def task(self, index: int, basename: str) -> Task:
-        """Claim the progress line for file *index* (1-based)."""
+        """Claim the progress row for file *index* (1-based)."""
         with self._lock:
             handle = Task(self, index, self.total, basename)
             self._tasks[index] = handle
             self._order.append(index)
-            self._touch_locked()
+            self._append_locked()
             return handle
 
     def is_live(self) -> bool:
-        """True when an ANSI live region is active (caller may suppress
+        """True when an ANSI live display is active (caller may suppress
         verbose per-file output that would interleave with it)."""
         return self._use_ansi
 
     def close(self):
-        """Stop the region: keep the lines on screen, restore the cursor
-        and leave it on a fresh line below them."""
+        """Render the final state, restore the cursor and leave it on a
+        fresh line below the last row (rows stay on screen)."""
         with self._lock:
             if self._closed:
                 return
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
-            if self._use_ansi and self._dirty:
-                self._render_locked()  # show the final state
-            self._closed = True
             if self._use_ansi and self._drawn:
-                self._write('\x1b[?25h\n')  # keep region, cursor below it
-            else:
-                self._write(self._bottom_locked() + '\n')
+                self._render_locked()
+                if self._cursor_hidden:
+                    self._write('\x1b[?25h')
+                self._write('\n')
+            self._closed = True
 
     # ── internals ────────────────────────────────────────────────────────
 
     def _write(self, text: str):
         self._stream.write(text)
         self._stream.flush()
+
+    def _append_locked(self):
+        """Put the newly claimed row at the bottom (appends, scrolls)."""
+        if self._closed or not self._use_ansi:
+            return
+        line = self._format_line(self._tasks[self._order[-1]], self._width())
+        out = self._stream
+        if self._drawn == 0:
+            out.write('\x1b[?25l')   # hide cursor while live
+            self._cursor_hidden = True
+        else:
+            out.write('\n')          # fresh row; scrolls at the bottom edge
+        out.write('\x1b[2K' + line + '\r')
+        self._rendered.append(line)
+        self._drawn += 1
+        self._last_render = time.monotonic()
+        self._dirty = False
+        out.flush()
 
     def _touch_locked(self):
         if self._closed:
@@ -232,32 +239,34 @@ class Progress:
                 self._render_locked()
 
     def _render_locked(self):
-        if not self._dirty or self._closed:
+        """Rewrite only the on-screen rows whose text changed; keep the
+        cursor at the bottom row.  Rows that already scrolled into the
+        terminal's scrollback are never redrawn (that would corrupt the
+        visible tail), they keep their state at scroll time."""
+        if not self._dirty or self._closed or not self._order:
             return
         width = self._width()
         height = max(3, self._height())
-        lines = []
-        for i in self._order:
-            t = self._tasks.get(i)
-            if t is not None:
-                lines.append(self._format_line(t, width))
-        lines.append(self._bottom_locked())
+        start = max(0, self._drawn - (height - 1))  # first on-screen row
         self._last_render = time.monotonic()
         self._dirty = False
-
         out = self._stream
-        window = visible_window(lines, height)
-        if self._drawn == 0:
-            out.write('\x1b[?25l')  # hide cursor while live
-        else:
-            out.write(f'\x1b[{min(self._drawn, height) - 1}A\r')
-        for j, ln in enumerate(window):
-            out.write('\x1b[2K')  # erase previous content of this row
-            if j < len(window) - 1:
-                out.write(ln + '\n')
-            else:
-                out.write(ln + '\r')  # stay on the last row for redraws
-        self._drawn = len(lines)
+        for i, index in enumerate(self._order):
+            t = self._tasks.get(index)
+            if t is None:
+                continue
+            line = self._format_line(t, width)
+            if i < start:
+                continue                  # scrolled into history: keep as is
+            if self._rendered[i] == line:
+                continue
+            from_bottom = self._drawn - 1 - i
+            if from_bottom:
+                out.write(f'\x1b[{from_bottom}A\r')
+            out.write('\x1b[2K' + line)
+            if from_bottom:
+                out.write(f'\x1b[{from_bottom}B\r')
+            self._rendered[i] = line
         out.flush()
 
     def _format_line(self, t: Task, width: int) -> str:
@@ -278,14 +287,6 @@ class Progress:
             return f'{prefix}[{bar}] {action} \u00b7 {old}{_ARROW}{new}'
         old = truncate(t.basename, remaining)
         return f'{prefix}[{bar}] {action} \u00b7 {old}'
-
-    def _bottom_locked(self) -> str:
-        bottom = (f'{self.mode}: {self._done}/{self.total} '
-                  f'\u0444\u0430\u0439\u043b\u043e\u0432 \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043e')
-        if self._queued:
-            bottom += (f' \u00b7 {self._queued} '
-                       f'\u0433\u043e\u0442\u043e\u0432\u043e \u043a \u043f\u0435\u0440\u0435\u0438\u043c\u0435\u043d\u043e\u0432\u0430\u043d\u0438\u044e')
-        return bottom
 
     def _width(self) -> int:
         try:

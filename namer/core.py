@@ -336,10 +336,10 @@ def process_directory(
     Files are analysed in parallel (settings.MAX_CONCURRENT_FILES workers)
     because lookups are network-bound; the rename pass itself stays
     sequential so intra-batch destination conflicts are resolved safely.
-    A live progress region (one line per file) is drawn on stderr when
-    the terminal supports it; finished lines stay on screen and scroll.
-    Diagnostics (skip reasons) are printed to stderr after the region
-    stops, but there is no per-file rename log on stdout.
+    Progress rows (one line per file) are drawn on stderr when the
+    terminal supports it; rows are appended and scroll like a plain CLI,
+    nothing is erased.  Diagnostics (skip reasons) are printed to stderr
+    after ``close()``, but there is no per-file rename log on stdout.
 
     Validates metadata first: if season or title could not be determined,
     prints a recommendation and exits early.
@@ -429,8 +429,7 @@ def process_directory(
 
             if handle.state == 'done':  # errored during generation
                 if meta.get('_skip_reason'):
-                    warnings.append(f'  \u26a0 {basename}')
-                    warnings.append(f'    skipped — {meta["_skip_reason"]}')
+                    warnings.append(f'\u26a0 {basename} skipped ({meta["_skip_reason"]})')
                 continue
 
             if verbose and not live:
@@ -459,8 +458,7 @@ def process_directory(
             # Allow missing ep_title — _format_template handles the gap
 
             if skip_reason:
-                warnings.append(f'  \u26a0 {basename}')
-                warnings.append(f'    skipped — {skip_reason}')
+                warnings.append(f'\u26a0 {basename} skipped')
                 handle.finish('skipped')
                 continue
 

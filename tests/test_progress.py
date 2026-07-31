@@ -39,7 +39,7 @@ class TestWidthAndTruncate:
 class TestProgressLineMode:
     """enabled=False → no ANSI, compact lines per completion."""
 
-    def test_finish_prints_line_and_bottom_summary(self):
+    def test_finish_prints_compact_line(self):
         stream = io.StringIO()
         p = Progress(total=3, mode='dry-run', stream=stream, enabled=False)
         t1 = p.task(1, 'a.mkv')
@@ -50,29 +50,8 @@ class TestProgressLineMode:
         t2.finish('renamed')
         p.close()
         out = stream.getvalue()
-        assert '  renamed [2/3] b.mkv \u2192 new.mkv' in out
-        assert 'dry-run: 1/3 \u0444\u0430\u0439\u043b\u043e\u0432 \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043e' in out
-
-    def test_parked_files_show_in_bottom_line(self):
-        stream = io.StringIO()
-        p = Progress(total=2, mode='rename', stream=stream, enabled=False)
-        t = p.task(1, 'a.mkv')
-        t.park()
-        p.close()
-        out = stream.getvalue()
-        assert '1 \u0433\u043e\u0442\u043e\u0432\u043e \u043a \u043f\u0435\u0440\u0435\u0438\u043c\u0435\u043d\u043e\u0432\u0430\u043d\u0438\u044e' in out
-
-    def test_unpark_then_finish_clears_queue(self):
-        stream = io.StringIO()
-        p = Progress(total=2, mode='rename', stream=stream, enabled=False)
-        t = p.task(1, 'a.mkv')
-        t.park()
-        t.unpark('renaming')
-        t.finish('renamed')
-        p.close()
-        out = stream.getvalue()
-        assert '\u0433\u043e\u0442\u043e\u0432\u043e' not in out
-        assert 'rename: 1/2 \u0444\u0430\u0439\u043b\u043e\u0432 \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043e' in out
+        # only the completed file is logged, nothing else
+        assert out == '  renamed [2/3] b.mkv \u2192 new.mkv\n'
 
     def test_finish_is_idempotent(self):
         stream = io.StringIO()
@@ -83,7 +62,6 @@ class TestProgressLineMode:
         p.close()
         out = stream.getvalue()
         assert out.count('  renamed [1/1]') == 1
-        assert 'rename: 1/1' in out
 
     def test_set_action_after_done_is_ignored(self):
         stream = io.StringIO()
@@ -93,7 +71,17 @@ class TestProgressLineMode:
         t.set_action('voting')
         t.set_new_name('x.mkv')
         p.close()
-        assert 'rename: 1/1' in stream.getvalue()
+        # stage/name changes after done print nothing extra
+        assert stream.getvalue() == '  renamed [1/1] a.mkv\n'
+
+    def test_line_mode_prints_nothing_until_finish(self):
+        stream = io.StringIO()
+        p = Progress(total=2, mode='rename', stream=stream, enabled=False)
+        p.task(1, 'a.mkv')
+        p.task(2, 'b.mkv')
+        assert stream.getvalue() == ''
+        p.close()
+        assert stream.getvalue() == ''  # unfinished files print nothing
 
 
 class TestProgressAnsiFormat:
@@ -188,7 +176,7 @@ class TestProgressAnsiRegion:
         assert '\x1b[?25l' in out  # hide cursor
         assert 'a.mkv' in out
 
-    def test_close_keeps_region_and_shows_cursor(self, monkeypatch):
+    def test_close_keeps_rows_and_shows_cursor(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
         stream = io.StringIO()
         p = self._progress(stream=stream)
@@ -197,53 +185,67 @@ class TestProgressAnsiRegion:
         p.close()
         out = stream.getvalue()
         assert '\x1b[?25h' in out  # cursor restored
-        assert p._drawn == 2        # file line + bottom stay on screen
+        assert p._drawn == 1        # the file row stays on screen
         assert out.endswith('\x1b[?25h\n')
 
-    def test_finished_lines_stay_and_region_only_grows(self, monkeypatch):
+    def test_finished_lines_stay_and_rows_never_shrink(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
         p = self._progress(stream=io.StringIO())
         t1 = p.task(1, 'a.mkv')
         t2 = p.task(2, 'b.mkv')
-        assert p._drawn == 3  # two file lines + bottom
-        t1.park()             # parked line stays visible
-        assert p._drawn == 3
+        assert p._drawn == 2
+        t1.park()             # parked row stays visible
+        assert p._drawn == 2
         t1.unpark('renaming')
-        t1.finish('renamed')  # finished line stays visible
-        assert p._drawn == 3
+        t1.finish('renamed')  # finished row stays visible
+        assert p._drawn == 2
         t2.finish('unchanged')
-        assert p._drawn == 3  # never shrinks
+        assert p._drawn == 2  # never shrinks
         p.close()
 
-
-    def test_region_window_scrolls_over_short_terminal(self, monkeypatch):
+    def test_rows_are_appended_and_never_erased(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
         stream = io.StringIO()
         p = self._progress(total=30, stream=stream)
-        # pretend the terminal is 3 rows tall
-        p._height = lambda: 3
         for i in range(1, 31):
             p.task(i, f'file{i:02d}.mkv')
-        assert p._drawn == 31  # virtual height keeps growing
         p.close()
-        assert 'file01.mkv' not in stream.getvalue().split('\x1b[?25h\n')[0][-400:]
-        assert 'file30.mkv' in stream.getvalue()
+        out = stream.getvalue()
+        # every row is appended once (with a newline so the terminal
+        # scrolls naturally, like any CLI); nothing is rewritten away
+        assert out.count('file01.mkv') == 1
+        assert out.count('file30.mkv') == 1
+        assert out.index('file01.mkv') < out.index('file30.mkv')
+        assert out.count('\n') >= 29
 
-class TestVisibleWindow:
-    def test_window_is_tail_when_longer_than_height(self):
-        from namer.progress import visible_window
-        lines = [f'l{i}' for i in range(10)]
-        assert visible_window(lines, 3) == ['l7', 'l8', 'l9']
+    def test_scrolled_off_rows_are_not_redrawn(self, monkeypatch):
+        monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
+        stream = io.StringIO()
+        p = self._progress(total=10, stream=stream)
+        p._height = lambda: 3  # tiny terminal: only the last 2 rows visible
+        for i in range(1, 11):
+            p.task(i, f'file{i:02d}.mkv')
+        # now update the FIRST file — its row is in the scrollback
+        p._tasks[1].set_action('voting')
+        out = stream.getvalue()
+        # the redraw must not target the scrolled-off row 1 (cursor-up
+        # would clamp at the top edge and corrupt the visible tail)
+        assert '\x1b[9A' not in out
+        assert '\x1b[2A' not in out  # only rows within height-1 may move
 
-    def test_window_is_all_lines_when_short(self):
-        from namer.progress import visible_window
-        lines = ['a', 'b']
-        assert visible_window(lines, 10) == ['a', 'b']
-
-    def test_window_at_least_one_line(self):
-        from namer.progress import visible_window
-        assert visible_window(['only'], 1) == ['only']
-
+    def test_row_update_rewrites_in_place(self, monkeypatch):
+        monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
+        stream = io.StringIO()
+        p = self._progress(total=2, stream=stream)
+        p.task(1, 'a.mkv')
+        p.task(2, 'b.mkv')
+        t1 = p._tasks[1]
+        t1.set_action('voting')       # only row 1 changes
+        out = stream.getvalue()
+        # row 1 is rewritten in place (cursor up 1, erase, write, back)
+        assert '\x1b[1A\r\x1b[2K' in out
+        # row 2 text appears exactly once (appended, never rewritten)
+        assert out.count('2/2') == 1
 
 class TestProcessDirectoryIntegration:
     """process_directory runs in parallel and defers history to stdout."""
@@ -295,6 +297,20 @@ class TestProcessDirectoryIntegration:
         # line mode (pytest captures stderr → not a TTY) reports completions
         assert 'renamed [1/2]' in err
         assert 'renamed [2/2]' in err
+
+    def test_skip_warning_is_one_line(self, monkeypatch, tmp_path, capsys):
+        self._disable_online(monkeypatch)
+        show = tmp_path / 'Cool Show'
+        show.mkdir()
+        extras = show / 'Featurettes'
+        extras.mkdir()
+        (extras / 'Episode 101 Animatic.mkv').write_bytes(b'x')
+        from namer.core import process_directory
+        renamed, total = process_directory(str(show), dry_run=True)
+        assert (renamed, total) == (0, 1)
+        _, err = capsys.readouterr()
+        warnings = [ln for ln in err.splitlines() if ln.startswith('\u26a0')]
+        assert warnings == ['\u26a0 Episode 101 Animatic.mkv skipped']
 
     def test_empty_directory(self, tmp_path, capsys):
         from namer.core import process_directory
