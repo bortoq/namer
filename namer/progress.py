@@ -1,21 +1,22 @@
 """Live progress display for batch operations.
 
-One file = one terminal row, appended in its FINAL state when the file is
-processed (renamed / skipped / unchanged / error), so rows that scroll
-into the scrollback always show the completed result — like any ordinary
-CLI tool.  While the batch is being analysed (the slow, parallel phase)
-a single live "activity" line shows the file currently being processed
-and its pipeline stage; it is dropped when the rename pass starts.
+One file = one terminal row.  Each row is printed when the file is claimed
+and rewritten in place (ANSI cursor moves on a TTY) as the file advances
+through the pipeline stages.  When the batch is taller than the terminal
+the oldest rows scroll off the top into the scrollback, exactly like any
+ordinary CLI tool — nothing is ever erased.  On a pipe or file a compact
+line is logged per completed file instead.  Every state change is guarded
+by a lock, so worker threads may update freely.
 
-On a pipe or file (no TTY) a compact line is logged per completed file
-instead.  Every state change is guarded by a lock, so worker threads may
-update freely.  The caller prints no diagnostics after ``close()``: the
-skip/error status is visible on each file's own row.
+The caller prints diagnostics (skip reasons) to stderr after ``close()``.
 """
 
 import os
+import re
+import select
 import shutil
 import sys
+import termios
 import threading
 import time
 import unicodedata
@@ -30,7 +31,7 @@ _BAR_EMPTY = ' '          # empty cells are blank, like a plain CLI
 _ELLIPSIS = '\u2026'     # …
 _ARROW = ' \u2192 '      # →
 _BAR_WIDTH = 20
-_THROTTLE = 0.1          # seconds between activity-line redraws
+_THROTTLE = 0.1          # seconds between in-place redraws
 
 
 def _char_width(ch: str) -> int:
@@ -64,7 +65,7 @@ class Task:
     """One file's progress row.  All methods are thread-safe."""
 
     __slots__ = ('progress', 'index', 'total', 'basename', 'new_name',
-                 'stage', 'status', 'state', 'committed')
+                 'stage', 'status', 'state')
 
     def __init__(self, progress, index: int, total: int, basename: str):
         self.progress = progress
@@ -75,7 +76,6 @@ class Task:
         self.stage = 0            # ordinal in STAGES (0 = none yet)
         self.status = None        # terminal state label, e.g. 'skipped'
         self.state = 'active'     # 'active' | 'parked' | 'done'
-        self.committed = False    # row already written to the stream
 
     # ── public API (callable from any thread) ────────────────────────────
 
@@ -98,12 +98,11 @@ class Task:
             self.progress._touch_locked()
 
     def park(self):
-        """Generation finished; the row appears later in its final state."""
+        """Generation finished; the row stays and shows the rendered name."""
         with self.progress._lock:
             if self.state != 'active':
                 return
             self.state = 'parked'
-            self.progress._settle_locked()
             self.progress._touch_locked()
 
     def unpark(self, action: str = None):
@@ -112,7 +111,6 @@ class Task:
             if self.state != 'parked':
                 return
             self.state = 'active'
-            self.progress._active_count += 1
             if action:
                 idx = _STAGE_IDX.get(action)
                 if idx is not None and idx > self.stage:
@@ -120,39 +118,26 @@ class Task:
             self.progress._touch_locked()
 
     def finish(self, status: str):
-        """Mark the file processed; its row appears in this final state."""
+        """Mark the file processed; its row stays on screen forever."""
         with self.progress._lock:
             if self.state == 'done':
                 return
-            from_active = self.state == 'active'
             self.state = 'done'
             self.status = status
-            if from_active:
-                self.progress._settle_locked()
+            self.progress._touch_locked()
             if not self.progress._use_ansi:
                 line = f'  {status} [{self.index}/{self.total}] {self.basename}'
                 if self.new_name:
                     line += f'{_ARROW}{self.new_name}'
                 self.progress._write(line + '\n')
-            elif self.progress._activity is None:
-                self.progress._append_locked(self)
-            # else: generation still running — the row is appended by
-            # commit() during the rename pass.
-
-    def commit(self):
-        """Append the row if the finish happened during generation and was
-        deferred (e.g. an error in a worker while others still run)."""
-        with self.progress._lock:
-            if self.state != 'done' or self.committed:
-                return
-            if not self.progress._use_ansi:
-                return  # line mode already printed at finish()
-            self.progress._append_locked(self)
 
 
 class Progress:
-    """Batch progress: one row per processed file, rows scroll like a
-    plain CLI and always show the final per-file state.
+    """Batch progress: one row per file, rows scroll like a plain CLI.
+
+    Rows are appended at the bottom (so the terminal scrolls the oldest
+    ones into the scrollback) and only the *changed* rows are rewritten
+    in place on a TTY; nothing is erased.
 
     Args:
         total: Number of files in the batch.
@@ -169,17 +154,18 @@ class Progress:
         self._use_ansi = enabled if enabled is not None else bool(
             getattr(self._stream, 'isatty', lambda: False)())
         self._lock = threading.Lock()
-        self._tasks = {}        # index -> Task
-        self._order = []        # claim order of indices
+        self._tasks = {}      # index -> Task
+        self._order = []      # claim order of indices
+        self._rendered = []   # last rendered text per row (parallel to _order)
         self._closed = False
-        self._drawn = 0         # committed rows on screen; never shrinks
-        self._active_count = 0  # tasks still in the 'active' state
-        self._activity = None   # index of the task on the live line
-        self._activity_text = ''
+        self._drawn = 0       # rows on screen; never shrinks
         self._cursor_hidden = False
         self._dirty = False
         self._last_render = 0.0
         self._timer = None
+        self._block_top = None  # 1-based line of the first drawn row (DSR truth)
+        self._cur_row = None    # 1-based line of the cursor (bottom of block)
+        self._dsr_ok = None     # None=untested, False=disabled (no TTY)
 
     # ── public API ───────────────────────────────────────────────────────
 
@@ -189,9 +175,7 @@ class Progress:
             handle = Task(self, index, self.total, basename)
             self._tasks[index] = handle
             self._order.append(index)
-            self._active_count += 1
-            self._activity = index
-            self._touch_locked()
+            self._append_locked()
             return handle
 
     def is_live(self) -> bool:
@@ -200,23 +184,19 @@ class Progress:
         return self._use_ansi
 
     def close(self):
-        """Drop the live line, restore the cursor and leave it on a fresh
-        row (committed rows stay on screen)."""
+        """Render the final state, restore the cursor and leave it on a
+        fresh line below the last row (rows stay on screen)."""
         with self._lock:
             if self._closed:
                 return
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
-            if self._use_ansi:
-                if self._activity is not None:
-                    if self._cursor_hidden:
-                        self._write('\r\x1b[2K')
-                    self._activity = None
-                    self._activity_text = ''
-                    self._write('\n')  # fresh line for the summary
+            if self._use_ansi and self._drawn:
+                self._render_locked()
                 if self._cursor_hidden:
                     self._write('\x1b[?25h')
+                self._write('\n')
             self._closed = True
 
     # ── internals ────────────────────────────────────────────────────────
@@ -225,39 +205,100 @@ class Progress:
         self._stream.write(text)
         self._stream.flush()
 
-    def _settle_locked(self):
-        """A task left the 'active' state.  When the whole generation phase
-        is over, drop the live activity line."""
-        self._active_count -= 1
-        if self._active_count <= 0 and self._activity is not None:
-            if self._use_ansi and self._cursor_hidden:
-                self._write('\r\x1b[2K')
-            self._activity = None
-            self._activity_text = ''
-            self._dirty = False
-
-    def _append_locked(self, t: Task):
-        """Write the finished row exactly like a plain CLI line: the row
-        text followed by a newline.  Committed rows contain no escape
-        codes at all, so terminals scroll and buffer them exactly like
-        any normal command output."""
+    def _append_locked(self):
+        """Put the newly claimed row at the bottom (appends, scrolls)."""
         if self._closed or not self._use_ansi:
             return
-        line = self._format_line(t, self._width())
+        line = self._format_line(self._tasks[self._order[-1]], self._width())
         out = self._stream
-        if not self._cursor_hidden:
+        if self._drawn == 0:
             out.write('\x1b[?25l')   # hide cursor while live
             self._cursor_hidden = True
-        if self._activity is not None:
-            out.write('\r\x1b[2K')  # the live line becomes this row
-            self._activity = None
-            self._activity_text = ''
-        out.write(line + '\n')
-        t.committed = True
+        else:
+            out.write('\n')          # fresh row; scrolls at the bottom edge
+        out.write('\x1b[2K' + line + '\r')
+        self._rendered.append(line)
         self._drawn += 1
         self._last_render = time.monotonic()
         self._dirty = False
+        self._track_geometry_locked()
         out.flush()
+
+    def _track_geometry_locked(self):
+        """Follow the real block position.  When the cursor did not advance
+        after appending a row, the terminal scrolled and the block moved one
+        line up; this keeps ``_block_top`` exact regardless of the reported
+        terminal size or prior content on the screen."""
+        cur = self._dsr_row()
+        if cur is None:
+            return
+        if self._cur_row is not None and cur == self._cur_row and self._drawn > 1:
+            if self._block_top is not None:
+                self._block_top -= 1  # scrolled: block top moved up one line
+        elif self._block_top is None:
+            self._block_top = cur - (self._drawn - 1)
+        self._cur_row = cur
+
+    def _dsr_row(self):
+        """Query the cursor row via DSR (\x1b[6n).  Returns the 1-based row
+        number or None when the terminal is not a TTY / does not answer.
+
+        The terminal's reply carries no newline, and a canonical-mode line
+        discipline would buffer it until a newline arrives — i.e. the reply
+        would never become readable (and would be echoed onto the screen).
+        So the query runs with stdin switched to non-canonical mode without
+        echo; the previous termios is restored before returning."""
+        if self._dsr_ok is False:
+            return None
+        try:
+            in_fd = sys.stdin.fileno()
+            if not self._stream.isatty() or not sys.stdin.isatty():
+                self._dsr_ok = False
+                return None
+        except (OSError, ValueError, AttributeError):
+            self._dsr_ok = False
+            return None
+        saved = None
+        try:
+            saved = termios.tcgetattr(in_fd)
+            attrs = list(saved)
+            attrs[3] = attrs[3] & ~(termios.ICANON | termios.ECHO | termios.ECHONL)
+            cc = list(attrs[6])
+            cc[termios.VMIN] = 0
+            cc[termios.VTIME] = 1          # 0.1 s read timeout, no block
+            attrs[6] = cc
+            termios.tcsetattr(in_fd, termios.TCSANOW, attrs)
+        except (OSError, ValueError, termios.error):
+            self._dsr_ok = False
+            return None
+        try:
+            self._write('\x1b[6n')
+            buf = b''
+            deadline = time.monotonic() + 0.15
+            while time.monotonic() < deadline:
+                try:
+                    r, _, _ = select.select([in_fd], [], [], 0.05)
+                except (OSError, ValueError):
+                    return None
+                if not r:
+                    continue
+                try:
+                    chunk = os.read(in_fd, 64)
+                except OSError:
+                    self._dsr_ok = False
+                    return None
+                if not chunk:
+                    return None
+                buf += chunk
+                m = re.search(rb'\x1b\[(\d+);\d+R', buf)
+                if m:
+                    return int(m.group(1))
+            return None
+        finally:
+            try:
+                termios.tcsetattr(in_fd, termios.TCSANOW, saved)
+            except (OSError, ValueError, termios.error):
+                pass
 
     def _touch_locked(self):
         if self._closed:
@@ -281,23 +322,41 @@ class Progress:
                 self._render_locked()
 
     def _render_locked(self):
-        """Refresh the live activity line (shown while files are being
-        analysed in pass 1)."""
-        if not self._dirty or self._closed:
+        """Redraw the visible block of rows in one pass.  The block is
+        addressed from the REAL cursor position (DSR) and from the tracked
+        block top, so rows are never updated after they leave the screen
+        (rewriting scrollback content corrupts the display) and never
+        freeze while still visible.  Unchanged rows are left untouched."""
+        if not self._dirty or self._closed or not self._order:
             return
-        self._dirty = False
-        if self._drawn or self._activity is None:
+        width = self._width()
+        cur = self._dsr_row() if self._block_top is not None else None
+        if cur is not None and self._block_top is not None:
+            visible = min(self._drawn, cur, cur - self._block_top + 1)
+        else:
+            height = max(3, self._height())
+            visible = min(self._drawn, max(1, height - 1))
+        if visible <= 0:
             return
-        line = self._format_line(self._tasks[self._activity], self._width())
-        if line == self._activity_text:
-            return
-        out = self._stream
-        if not self._cursor_hidden:
-            out.write('\x1b[?25l')
-            self._cursor_hidden = True
-        out.write('\r\x1b[2K' + line)
-        self._activity_text = line
+        start = self._drawn - visible  # first on-screen row index
         self._last_render = time.monotonic()
+        self._dirty = False
+        out = self._stream
+        from_bottom = visible - 1
+        if from_bottom:
+            out.write(f'\x1b[{from_bottom}A\r')  # to the top of the block
+        for i in range(start, self._drawn):
+            t = self._tasks.get(self._order[i])
+            if t is None:
+                continue
+            line = self._format_line(t, width)
+            if line != self._rendered[i]:
+                out.write('\x1b[2K' + line)
+                self._rendered[i] = line
+            if i < self._drawn - 1:
+                out.write('\n')          # next row of the block
+        out.write('\r')                  # back to column 0 on the last row
+        self._cur_row = cur
         out.flush()
 
     def _format_line(self, t: Task, width: int) -> str:
@@ -325,3 +384,10 @@ class Progress:
         except (OSError, ValueError, AttributeError):
             size = shutil.get_terminal_size()
         return max(40, size.columns)
+
+    def _height(self) -> int:
+        try:
+            size = os.get_terminal_size(self._stream.fileno())
+        except (OSError, ValueError, AttributeError):
+            size = shutil.get_terminal_size()
+        return max(3, size.lines)

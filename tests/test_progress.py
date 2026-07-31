@@ -101,12 +101,11 @@ class TestProgressAnsiFormat:
             t.set_action('voting')
         line = self._format(mutate=mutate)
         assert '1/3' in line
-        assert '[ ' not in line          # bar brackets are tight
-        assert '\u2588' in line          # filled bar cells
         assert 'voting' in line
         assert 'Old.Name.S01E01.1080p.mkv' in line
 
     def test_bar_fills_with_stage(self):
+        """The bar fills as the file advances through the stages."""
         def mutate(p, t):
             t.set_action('parsing feeds')
         line = self._format(mutate=mutate)
@@ -153,12 +152,23 @@ class TestProgressAnsiFormat:
         assert '\u2192' in line
         assert '01.01. New.mkv' in line
 
-    def test_skipped_line_shows_status(self):
+    def test_skipped_line_shows_status_and_empty_bar(self):
         def mutate(p, t):
             t.finish('skipped')
         line = self._format(mutate=mutate)
         assert 'skipped' in line
         assert '\u2192' not in line
+        assert '\u2588' not in line                       # no filled cells
+        assert '[' + ' ' * 20 + ']' in line                # empty bar
+
+    def test_unchanged_and_error_show_empty_bar(self):
+        for status in ('unchanged', 'error'):
+            def mutate(p, t, status=status):
+                t.finish(status)
+            line = self._format(mutate=mutate)
+            assert status in line
+            assert '\u2588' not in line, status
+            assert '[' + ' ' * 20 + ']' in line, status
 
 
 class TestProgressAnsiRegion:
@@ -176,7 +186,7 @@ class TestProgressAnsiRegion:
         assert '\x1b[?25l' in out  # hide cursor
         assert 'a.mkv' in out
 
-    def test_close_drops_live_line_and_shows_cursor(self, monkeypatch):
+    def test_close_keeps_rows_and_shows_cursor(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
         stream = io.StringIO()
         p = self._progress(stream=stream)
@@ -185,23 +195,22 @@ class TestProgressAnsiRegion:
         p.close()
         out = stream.getvalue()
         assert '\x1b[?25h' in out  # cursor restored
-        assert p._drawn == 0        # no committed rows yet (live line only)
-        assert out.endswith('\x1b[?25h')
+        assert p._drawn == 1        # the file row stays on screen
+        assert out.endswith('\x1b[?25h\n')
 
-    def test_rows_appear_on_finish_and_never_shrink(self, monkeypatch):
+    def test_finished_lines_stay_and_rows_never_shrink(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
         p = self._progress(stream=io.StringIO())
         t1 = p.task(1, 'a.mkv')
         t2 = p.task(2, 'b.mkv')
-        assert p._drawn == 0          # claimed rows are not shown yet
-        t1.park()                     # generation done — still not shown
-        assert p._drawn == 0
-        t2.park()                     # generation fully over (pass 1 done)
+        assert p._drawn == 2
+        t1.park()             # parked row stays visible
+        assert p._drawn == 2
         t1.unpark('renaming')
-        t1.finish('renamed')          # row appears in final state
-        assert p._drawn == 1
+        t1.finish('renamed')  # finished row stays visible
+        assert p._drawn == 2
         t2.finish('unchanged')
-        assert p._drawn == 2          # never shrinks
+        assert p._drawn == 2  # never shrinks
         p.close()
 
     def test_rows_are_appended_and_never_erased(self, monkeypatch):
@@ -210,109 +219,43 @@ class TestProgressAnsiRegion:
         p = self._progress(total=30, stream=stream)
         for i in range(1, 31):
             p.task(i, f'file{i:02d}.mkv')
-        for i in range(1, 31):
-            p._tasks[i].finish('renamed')
-            p._tasks[i].commit()  # rename pass: show deferred rows
         p.close()
         out = stream.getvalue()
-        # committed rows are appended once each (newline-separated, so the
-        # terminal scrolls naturally); the live activity line also mentions
-        # files but the committed row is unique per file
-        assert out.count('renamed \u00b7 file01.mkv') == 1
-        assert out.count('renamed \u00b7 file30.mkv') == 1
+        # every row is appended once (with a newline so the terminal
+        # scrolls naturally, like any CLI); nothing is rewritten away
+        assert out.count('file01.mkv') == 1
+        assert out.count('file30.mkv') == 1
         assert out.index('file01.mkv') < out.index('file30.mkv')
-        assert out.count('\n') == 30   # one newline per committed row
+        assert out.count('\n') >= 29
 
-    def test_error_finish_during_generation_is_committed_later(self, monkeypatch):
+    def test_scrolled_off_rows_are_not_redrawn(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
         stream = io.StringIO()
-        p = self._progress(total=2, stream=stream)
-        t1 = p.task(1, 'a.mkv')
-        t2 = p.task(2, 'b.mkv')
-        # t1 errors while t2 is still generating (activity line showing)
-        t1.finish('error')
-        assert p._drawn == 0             # row deferred, not appended yet
-        t2.park()                         # generation ends
-        t1.commit()                       # rename pass shows the error row
-        assert p._drawn == 1
-        p.close()
-        assert 'error' in stream.getvalue()
-
-    def test_non_renamed_rows_show_empty_bar(self, monkeypatch):
-        monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
-        for status in ('skipped', 'unchanged', 'error'):
-            stream = io.StringIO()
-            p = self._progress(total=2, stream=stream)
-            t1 = p.task(1, 'a.mkv')
-            t1.park()
-            t1.finish(status)
-            p.close()
-            out = stream.getvalue()
-            first = out.split('\n')[0]
-            row = first.split('\r')[-1]  # committed row (after live-line erasings)
-            assert '[' + ' ' * 20 + ']' in row, status  # empty bar
-            assert '\u2588' not in row, status          # no filled cells
-
-    def test_renamed_row_gets_full_bar(self, monkeypatch):
-        monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
-        stream = io.StringIO()
-        p = self._progress(total=2, stream=stream)
-        t1 = p.task(1, 'a.mkv')
-        t1.park()
-        t1.finish('renamed')
-        p.close()
-        assert '\u2588' * 20 in stream.getvalue()
-
-    def test_committed_row_shows_final_state(self, monkeypatch):
-        monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
-        stream = io.StringIO()
-        p = self._progress(total=2, stream=stream)
-        t1 = p.task(1, 'a.mkv')
-        t1.set_action('parsing feeds')   # mid-generation state
-        t1.finish('renamed')
-        p.close()
+        p = self._progress(total=10, stream=stream)
+        p._height = lambda: 3  # tiny terminal: only the last 2 rows visible
+        for i in range(1, 11):
+            p.task(i, f'file{i:02d}.mkv')
+        # now update the FIRST file — its row is in the scrollback
+        p._tasks[1].set_action('voting')
         out = stream.getvalue()
-        before = out.split('\x1b[?25h')[0].rstrip('\n')
-        row = [s for s in before.split('\r') if s][-1]  # committed row
-        # the committed row is the FINAL state, not the mid-generation one
-        assert 'renamed' in row
-        assert '\u2588' * 20 in row     # full 20-cell bar
-        assert 'parsing feeds' not in row
+        # the redraw must not target the scrolled-off row 1 (cursor-up
+        # would clamp at the top edge and corrupt the visible tail)
+        assert '\x1b[9A' not in out
+        assert '\x1b[2A' not in out  # only rows within height-1 may move
 
-    def test_activity_line_updates_in_place(self, monkeypatch):
+    def test_row_update_rewrites_in_place(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
         stream = io.StringIO()
         p = self._progress(total=2, stream=stream)
         p.task(1, 'a.mkv')
         p.task(2, 'b.mkv')
-        p._tasks[2].set_action('voting')
+        t1 = p._tasks[1]
+        t1.set_action('voting')       # only row 1 changes
         out = stream.getvalue()
-        # the live activity line is rewritten with \r only, never appended
-        assert out.count('\n') == 0
-        assert '2/2' in out
-        assert 'voting' in out
-
-    def test_committed_rows_are_plain_newline_lines(self, monkeypatch):
-        """Committed rows must contain no \r and no escape codes — byte
-        identical to a normal CLI line, so any terminal scrolls/buffers
-        them exactly like `ls` output."""
-        monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
-        stream = io.StringIO()
-        p = self._progress(total=2, stream=stream)
-        t1 = p.task(1, 'a.mkv')
-        t2 = p.task(2, 'b.mkv')
-        t1.park()
-        t2.park()
-        t1.finish('renamed')
-        t2.finish('skipped')
-        p.close()
-        out = stream.getvalue()
-        # committed rows: newline-terminated, no \r, no escape codes —
-        # byte identical to a plain CLI line (activity renders may use \r)
-        for row in ('renamed \u00b7 a.mkv', 'skipped \u00b7 b.mkv'):
-            idx = out.index(row)
-            assert out[idx:].startswith(row + '\n'), row
-            assert '\r' not in row and '\x1b' not in row
+        # row 1 is rewritten in place (cursor up 1, erase, write, back)
+        assert '\x1b[1A\r\x1b[2K' in out
+        # row 2 text appears exactly once (appended, never rewritten)
+        assert out.count('2/2') == 1
 
 class TestProcessDirectoryIntegration:
     """process_directory runs in parallel and defers history to stdout."""
@@ -384,3 +327,83 @@ class TestProcessDirectoryIntegration:
         renamed, total = process_directory(str(tmp_path))
         assert (renamed, total) == (0, 0)
         assert 'No video files found.' in capsys.readouterr().out
+
+
+class TestDsrGeometry:
+    """The live block is addressed from the REAL cursor row (DSR), never
+    from the reported terminal height.  Regression: rows below the reported
+    height froze at an intermediate state (stuck at 'voting'/'rendering')."""
+
+    def _mark_all_done(self, p):
+        """Flip every row to done+renamed without triggering renders."""
+        with p._lock:
+            for t in p._tasks.values():
+                t.state = 'done'
+                t.status = 'renamed'
+
+    def test_uses_real_rows_not_reported_height(self, monkeypatch):
+        """30 rows on a screen whose *reported* height is 24 (StringIO →
+        default 24): DSR reports the cursor at row 30, so all 30 rows stay
+        live instead of freezing after row 23."""
+        monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
+        stream = io.StringIO()
+        p = Progress(total=30, mode='rename', stream=stream, enabled=True)
+        # cursor row tracks the block size exactly (nothing above the block)
+        monkeypatch.setattr(Progress, '_dsr_row', lambda self: self._drawn)
+        for i in range(1, 31):
+            p.task(i, f'file{i:02d}.mkv')
+        self._mark_all_done(p)
+        p._dirty = True
+        p._render_locked()
+        out = stream.getvalue()
+        # all 30 rows rewritten: block top = 1, cursor row 30 → move up 29
+        assert '\x1b[29A\r' in out
+        # the reported-height fallback would cap at 23 rows (\x1b[22A)
+        assert '\x1b[22A' not in out
+        assert out.count('file01.mkv') == 2   # appended + rewritten
+        assert out.count('file30.mkv') == 2
+        p.close()
+
+    def test_scroll_tracking_rewrites_only_visible_rows(self, monkeypatch):
+        """Once the block scrolls (cursor pinned at row 24 while rows keep
+        appending), the block top moves up and only the visible 24 rows are
+        rewritten; scrolled-off rows are left untouched."""
+        monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
+        stream = io.StringIO()
+        p = Progress(total=30, mode='rename', stream=stream, enabled=True)
+        calls = {'n': 0}
+
+        def fake_dsr(self):
+            calls['n'] += 1
+            return min(calls['n'], 24)   # cursor hits the bottom row, then scrolls
+
+        monkeypatch.setattr(Progress, '_dsr_row', fake_dsr)
+        for i in range(1, 31):
+            p.task(i, f'file{i:02d}.mkv')
+        assert p._block_top is not None
+        self._mark_all_done(p)
+        p._dirty = True
+        p._render_locked()
+        out = stream.getvalue()
+        # exactly the 24 on-screen rows are rewritten (move up 23)
+        assert '\x1b[23A\r' in out
+        # rows 1..6 scrolled off — appended once, never rewritten
+        assert out.count('file06.mkv') == 1
+        # row 7 is the first visible one — appended and rewritten
+        assert out.count('file07.mkv') == 2
+        p.close()
+
+    def test_dsr_failure_falls_back_to_reported_height(self):
+        """No DSR answer (not a TTY) → the old height-based geometry still
+        works and rows keep updating within the reported height."""
+        stream = io.StringIO()
+        p = Progress(total=10, mode='rename', stream=stream, enabled=True)
+        for i in range(1, 11):
+            p.task(i, f'file{i:02d}.mkv')
+        assert p._block_top is None        # DSR unavailable
+        self._mark_all_done(p)
+        p._dirty = True
+        p._render_locked()
+        out = stream.getvalue()
+        assert 'file10.mkv' in out
+        p.close()

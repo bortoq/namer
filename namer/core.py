@@ -337,9 +337,10 @@ def process_directory(
     because lookups are network-bound; the rename pass itself stays
     sequential so intra-batch destination conflicts are resolved safely.
     Progress rows (one line per file) are drawn on stderr when the
-    terminal supports it; each row appears in its final state (renamed,
-    skipped, unchanged, error) and rows scroll like a plain CLI, nothing
-    is erased.  There is no per-file rename log on stdout.
+    terminal supports it; each row appears as soon as the file is
+    claimed, is rewritten in place as it advances, and never gets
+    erased — old rows scroll into the terminal's scrollback like any
+    plain CLI.  There is no per-file rename log on stdout.
 
     Validates metadata first: if season or title could not be determined,
     prints a recommendation and exits early.
@@ -427,8 +428,7 @@ def process_directory(
             basename = os.path.basename(fpath)
 
             if handle.state == 'done':  # errored during generation
-                handle.commit()  # show the error row if it was deferred
-                continue
+                continue  # the row already shows 'error' (in-place update)
 
             if verbose and not live:
                 rel = os.path.relpath(fpath, directory)
