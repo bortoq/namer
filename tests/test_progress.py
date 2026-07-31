@@ -176,7 +176,7 @@ class TestProgressAnsiRegion:
         assert '\x1b[?25l' in out  # hide cursor
         assert 'a.mkv' in out
 
-    def test_close_keeps_rows_and_shows_cursor(self, monkeypatch):
+    def test_close_drops_live_line_and_shows_cursor(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
         stream = io.StringIO()
         p = self._progress(stream=stream)
@@ -185,22 +185,23 @@ class TestProgressAnsiRegion:
         p.close()
         out = stream.getvalue()
         assert '\x1b[?25h' in out  # cursor restored
-        assert p._drawn == 1        # the file row stays on screen
-        assert out.endswith('\x1b[?25h\n')
+        assert p._drawn == 0        # no committed rows yet (live line only)
+        assert out.endswith('\x1b[?25h')
 
-    def test_finished_lines_stay_and_rows_never_shrink(self, monkeypatch):
+    def test_rows_appear_on_finish_and_never_shrink(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
         p = self._progress(stream=io.StringIO())
         t1 = p.task(1, 'a.mkv')
         t2 = p.task(2, 'b.mkv')
-        assert p._drawn == 2
-        t1.park()             # parked row stays visible
-        assert p._drawn == 2
+        assert p._drawn == 0          # claimed rows are not shown yet
+        t1.park()                     # generation done — still not shown
+        assert p._drawn == 0
+        t2.park()                     # generation fully over (pass 1 done)
         t1.unpark('renaming')
-        t1.finish('renamed')  # finished row stays visible
-        assert p._drawn == 2
+        t1.finish('renamed')          # row appears in final state
+        assert p._drawn == 1
         t2.finish('unchanged')
-        assert p._drawn == 2  # never shrinks
+        assert p._drawn == 2          # never shrinks
         p.close()
 
     def test_rows_are_appended_and_never_erased(self, monkeypatch):
@@ -209,43 +210,62 @@ class TestProgressAnsiRegion:
         p = self._progress(total=30, stream=stream)
         for i in range(1, 31):
             p.task(i, f'file{i:02d}.mkv')
+        for i in range(1, 31):
+            p._tasks[i].finish('renamed')
+            p._tasks[i].commit()  # rename pass: show deferred rows
         p.close()
         out = stream.getvalue()
-        # every row is appended once (with a newline so the terminal
-        # scrolls naturally, like any CLI); nothing is rewritten away
-        assert out.count('file01.mkv') == 1
-        assert out.count('file30.mkv') == 1
+        # committed rows are appended once each (newline-separated, so the
+        # terminal scrolls naturally); the live activity line also mentions
+        # files but the committed row is unique per file
+        assert out.count('renamed \u00b7 file01.mkv') == 1
+        assert out.count('renamed \u00b7 file30.mkv') == 1
         assert out.index('file01.mkv') < out.index('file30.mkv')
         assert out.count('\n') >= 29
 
-    def test_scrolled_off_rows_are_not_redrawn(self, monkeypatch):
+    def test_error_finish_during_generation_is_committed_later(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
         stream = io.StringIO()
-        p = self._progress(total=10, stream=stream)
-        p._height = lambda: 3  # tiny terminal: only the last 2 rows visible
-        for i in range(1, 11):
-            p.task(i, f'file{i:02d}.mkv')
-        # now update the FIRST file — its row is in the scrollback
-        p._tasks[1].set_action('voting')
-        out = stream.getvalue()
-        # the redraw must not target the scrolled-off row 1 (cursor-up
-        # would clamp at the top edge and corrupt the visible tail)
-        assert '\x1b[9A' not in out
-        assert '\x1b[2A' not in out  # only rows within height-1 may move
+        p = self._progress(total=2, stream=stream)
+        t1 = p.task(1, 'a.mkv')
+        t2 = p.task(2, 'b.mkv')
+        # t1 errors while t2 is still generating (activity line showing)
+        t1.finish('error')
+        assert p._drawn == 0             # row deferred, not appended yet
+        t2.park()                         # generation ends
+        t1.commit()                       # rename pass shows the error row
+        assert p._drawn == 1
+        p.close()
+        assert 'error' in stream.getvalue()
 
-    def test_row_update_rewrites_in_place(self, monkeypatch):
+    def test_committed_row_shows_final_state(self, monkeypatch):
+        monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
+        stream = io.StringIO()
+        p = self._progress(total=2, stream=stream)
+        t1 = p.task(1, 'a.mkv')
+        t1.set_action('parsing feeds')   # mid-generation state
+        t1.finish('renamed')
+        p.close()
+        out = stream.getvalue()
+        before = out.split('\x1b[?25h')[0].rstrip('\n')
+        row = [s for s in before.split('\r') if s][-1]  # committed row
+        # the committed row is the FINAL state, not the mid-generation one
+        assert 'renamed' in row
+        assert '\u2588' * 20 in row     # full 20-cell bar
+        assert 'parsing feeds' not in row
+
+    def test_activity_line_updates_in_place(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
         stream = io.StringIO()
         p = self._progress(total=2, stream=stream)
         p.task(1, 'a.mkv')
         p.task(2, 'b.mkv')
-        t1 = p._tasks[1]
-        t1.set_action('voting')       # only row 1 changes
+        p._tasks[2].set_action('voting')
         out = stream.getvalue()
-        # row 1 is rewritten in place (cursor up 1, erase, write, back)
-        assert '\x1b[1A\r\x1b[2K' in out
-        # row 2 text appears exactly once (appended, never rewritten)
-        assert out.count('2/2') == 1
+        # the live activity line is rewritten with \r only, never appended
+        assert out.count('\n') == 0
+        assert '2/2' in out
+        assert 'voting' in out
 
 class TestProcessDirectoryIntegration:
     """process_directory runs in parallel and defers history to stdout."""
@@ -298,7 +318,7 @@ class TestProcessDirectoryIntegration:
         assert 'renamed [1/2]' in err
         assert 'renamed [2/2]' in err
 
-    def test_skip_warning_is_one_line(self, monkeypatch, tmp_path, capsys):
+    def test_skip_shows_in_row_without_warning(self, monkeypatch, tmp_path, capsys):
         self._disable_online(monkeypatch)
         show = tmp_path / 'Cool Show'
         show.mkdir()
@@ -309,8 +329,8 @@ class TestProcessDirectoryIntegration:
         renamed, total = process_directory(str(show), dry_run=True)
         assert (renamed, total) == (0, 1)
         _, err = capsys.readouterr()
-        warnings = [ln for ln in err.splitlines() if ln.startswith('\u26a0')]
-        assert warnings == ['\u26a0 Episode 101 Animatic.mkv skipped']
+        assert '\u26a0' not in err                       # no ⚠ warning lines
+        assert 'skipped [1/1] Episode 101 Animatic.mkv' in err
 
     def test_empty_directory(self, tmp_path, capsys):
         from namer.core import process_directory

@@ -337,9 +337,9 @@ def process_directory(
     because lookups are network-bound; the rename pass itself stays
     sequential so intra-batch destination conflicts are resolved safely.
     Progress rows (one line per file) are drawn on stderr when the
-    terminal supports it; rows are appended and scroll like a plain CLI,
-    nothing is erased.  Diagnostics (skip reasons) are printed to stderr
-    after ``close()``, but there is no per-file rename log on stdout.
+    terminal supports it; each row appears in its final state (renamed,
+    skipped, unchanged, error) and rows scroll like a plain CLI, nothing
+    is erased.  There is no per-file rename log on stdout.
 
     Validates metadata first: if season or title could not be determined,
     prints a recommendation and exits early.
@@ -414,10 +414,9 @@ def process_directory(
         progress.close()
         raise
 
-    # ── Pass 2 (sequential): renames, warn on skips ─────────────────────
+    # ── Pass 2 (sequential): renames; each file's row shows its status ──
     renamed = 0
     reserved: set = set()  # claimed destinations, avoids intra-batch clashes
-    warnings: List[str] = []  # stderr lines, printed after the live region
     interrupted = False
 
     try:
@@ -428,8 +427,7 @@ def process_directory(
             basename = os.path.basename(fpath)
 
             if handle.state == 'done':  # errored during generation
-                if meta.get('_skip_reason'):
-                    warnings.append(f'\u26a0 {basename} skipped ({meta["_skip_reason"]})')
+                handle.commit()  # show the error row if it was deferred
                 continue
 
             if verbose and not live:
@@ -458,7 +456,6 @@ def process_directory(
             # Allow missing ep_title — _format_template handles the gap
 
             if skip_reason:
-                warnings.append(f'\u26a0 {basename} skipped')
                 handle.finish('skipped')
                 continue
 
@@ -488,7 +485,5 @@ def process_directory(
     if interrupted:
         print('\nInterrupted during rename pass.', file=sys.stderr)
         print(f'Renamed {renamed}/{total} files before interrupt.')
-    for line in warnings:
-        print(line, file=sys.stderr)
 
     return renamed, total
