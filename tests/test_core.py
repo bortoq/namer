@@ -298,3 +298,59 @@ class TestSpecialEpisodeHandling:
             assert name_reg != name_spec, f"collision: {name_reg} == {name_spec}"
             assert '01.01' in name_reg
             assert '00.01' in name_spec
+
+
+class TestVotingPipeline:
+    """Offline end-to-end tests of the collect → vote → render pipeline."""
+
+    @staticmethod
+    def _disable_online(monkeypatch):
+        """Replace network providers with empty feeds."""
+        from namer.providers import Feed
+        monkeypatch.setattr('namer.providers.wikipedia_feed',
+                            lambda meta, lang: Feed('wikipedia', {}))
+        monkeypatch.setattr('namer.providers.tvmaze_feed',
+                            lambda meta, lang: Feed('tvmaze', {}))
+        monkeypatch.setattr('namer.wikipedia.enrich_title_via_wiki',
+                            lambda meta, lang: False)
+
+    def test_season_conflict_refuses_rename(self, monkeypatch, tmp_path):
+        """Explicit S01 filename vs 'Season 2' dirname → refuse, no guess."""
+        self._disable_online(monkeypatch)
+        show = tmp_path / 'Show' / 'Season 2'
+        show.mkdir(parents=True)
+        fpath = show / 'Show.S01E05.mkv'
+        fpath.write_bytes(b'dummy')
+        name, meta = generate_new_name(
+            str(fpath), pattern='{season:02d}.{episode:02d}.{ext}')
+        assert name == 'Show.S01E05.mkv', f"expected refusal, got {name!r}"
+        assert 'season' in meta.get('_refused_fields', [])
+
+    def test_season_number_override_resolves_conflict(self, monkeypatch, tmp_path):
+        """User-provided -sn resolves the disputed season."""
+        self._disable_online(monkeypatch)
+        show = tmp_path / 'Show' / 'Season 2'
+        show.mkdir(parents=True)
+        fpath = show / 'Show.S01E05.mkv'
+        fpath.write_bytes(b'dummy')
+        name, meta = generate_new_name(
+            str(fpath), pattern='{season:02d}.{episode:02d}.{ext}', season_number=2)
+        assert meta['season'] == 2
+        assert '02.05.' in name, f"name={name!r}"
+
+    def test_special_maps_to_season_0_offline(self, monkeypatch):
+        """[Special] → season 0 through the voting pipeline."""
+        self._disable_online(monkeypatch)
+        name, meta = generate_new_name(
+            'Show [Special] [01].mkv', pattern='{season:02d}.{episode:02d}.{ext}')
+        assert meta['season'] == 0
+        assert '00.01.' in name, f"name={name!r}"
+
+    def test_assumed_anime_season_still_renames(self, monkeypatch):
+        """Assumed season 1 (anime format) with no opposition still works."""
+        self._disable_online(monkeypatch)
+        name, meta = generate_new_name(
+            'Show - 01.mkv', pattern='{season:02d}.{episode:02d}.{ext}')
+        assert meta['season'] == 1
+        assert meta['episode'] == 1
+        assert '01.01.' in name, f"name={name!r}"

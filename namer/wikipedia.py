@@ -12,12 +12,13 @@ Typical usage::
     enrich_title_via_wiki(meta, 'it')     # Italian: 'L'ospite invisibile'
 """
 
+import html
 import json
 import os
 import re
 import urllib.parse
 import urllib.request
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 # ── Known Wikipedia languages ──────────────────────────────────────────────────
 
@@ -330,3 +331,287 @@ def enrich_title_via_wiki(meta: Dict, target_lang: str = 'en') -> bool:
         return True
 
     return False
+
+
+# ── Episode-list and year extraction ──────────────────────────────────────────
+
+# Sub-headings under which episodes are specials (OVA etc.) → season 0
+_SPECIAL_HEADING_RE = re.compile(
+    r'original video|original net|ova|oav|oad|special|bonus|extra|omake', re.IGNORECASE
+)
+
+# Cache files (separate from translation cache to keep its format stable)
+_EP_CACHE_PATH_SUFFIX = 'wikipedia_episodes.json'
+_QID_CACHE_PATH_SUFFIX = 'wikipedia_qid.json'
+
+
+def _wiki_cache_path(suffix: str) -> str:
+    xdg = os.environ.get('XDG_CACHE_HOME', os.path.expanduser('~/.cache'))
+    return os.path.join(xdg, 'namer', suffix)
+
+
+def _get_wikitext(page_title: str, language: str = 'en') -> str:
+    """Return the raw wikitext of *page_title* on *language* Wikipedia.
+
+    Uses the canonical revisions API (prop=wikitext was deprecated upstream).
+    """
+    data = _wiki_api(language, {
+        'prop': 'revisions', 'rvprop': 'content', 'rvslots': 'main',
+        'titles': page_title,
+    })
+    if not data:
+        return ''
+    pages = data.get('query', {}).get('pages', {})
+    for pid, pdata in pages.items():
+        if pid != '-1':
+            revisions = pdata.get('revisions') or []
+            if revisions:
+                return revisions[0].get('slots', {}).get('main', {}).get('*', '') or ''
+    return ''
+
+
+def _season_from_page(page_name: str) -> Optional[int]:
+    """Extract season number from a page name like 'Show season 2' / 'Show (Series 3)'."""
+    m = re.search(r'(?:season|series|saison|temporada|part|volume)\s*(\d{1,2})',
+                  page_name, re.IGNORECASE)
+    if m:
+        s = int(m.group(1))
+        if 1 <= s <= 99:
+            return s
+    return None
+
+
+def _clean_wiki_title(raw: str) -> str:
+    """Clean a wikitext episode title: strip refs, links, templates, quotes."""
+    s = raw
+    s = html.unescape(s)
+    s = re.sub(r'<ref[^>]*/>', '', s)
+    s = re.sub(r'<ref[^>]*>.*?</ref>', '', s, flags=re.DOTALL)
+    # [[link|display]] → display ; [[link]] → link
+    s = re.sub(r'\[\[(?:[^|\]]*\|)?([^\]]*)\]\]', r'\1', s)
+    s = re.sub(r'\{\{[^{}]*\}\}', '', s)  # templates
+    s = re.sub(r"''+", '', s)  # italics/bold quotes
+    s = re.sub(r'&nbsp;', ' ', s)
+    s = s.replace('\u200b', '')
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s.strip('"')
+
+
+def _parse_episode_blocks(wikitext: str, default_season: Optional[int]) -> List[Tuple[int, int, str]]:
+    """Parse `{{Episode list/sublist}}` / `{{Episode list}}` blocks.
+
+    Returns a list of (season, episode, title).  Blocks under special-ish
+    headings are mapped to season 0.  Season-relative number (EpisodeNumber2)
+    is preferred; falls back to overall EpisodeNumber.
+    """
+    result: List[Tuple[int, int, str]] = []
+    current_heading = ''
+    # Walk line by line; track headings to catch OVA/special sections.
+    blocks = list(re.finditer(
+        r'\{\{Episode\s+list(?:/sublist)?\s*\n(.*?)\n\}\}',
+        wikitext, re.DOTALL,
+    ))
+    for m in blocks:
+        block_start = m.start()
+        # Determine the nearest heading before the block
+        heading_matches = list(re.finditer(
+            r'^={1,6}\s*(.*?)\s*={1,6}\s*$', wikitext[:block_start],
+            re.MULTILINE,
+        ))
+        if heading_matches:
+            current_heading = heading_matches[-1].group(1)
+        body = m.group(1)
+        ep_m = re.search(r'\|\s*EpisodeNumber\s*=\s*(\d{1,3})', body)
+        ep2_m = re.search(r'\|\s*EpisodeNumber2\s*=\s*(\d{1,3})', body)
+        title_m = re.search(r'\|\s*Title\s*=\s*(.+?)(?=\n\s*\||\Z)', body, re.DOTALL)
+        translit_m = re.search(r'\|\s*TranslitTitle\s*=\s*(.+?)(?=\n\s*\||\Z)', body, re.DOTALL)
+        if not ep_m and not ep2_m:
+            continue
+        ep_num = int((ep2_m or ep_m).group(1))
+        if ep2_m is None:
+            # No season-relative number → overall number; only usable for season 1
+            ep_num = int(ep_m.group(1))
+        raw_title = (title_m or translit_m)
+        if not raw_title:
+            continue
+        title = _clean_wiki_title(raw_title.group(1))
+        if not title or len(title) < 2:
+            continue
+        if _SPECIAL_HEADING_RE.search(current_heading):
+            season = 0
+        else:
+            season = default_season if default_season is not None else 1
+        result.append((season, ep_num, title))
+    return result
+
+
+def fetch_episode_titles(show_title: str, language: str = 'en') -> Dict[Tuple[int, int], str]:
+    """Return {(season, episode): title} for *show_title* from Wikipedia.
+
+    Finds the 'List of X episodes' page, follows transcluded season sub-pages
+    ({{:Show season N}} / {{Main|Show season N}}), and parses their episode
+    tables.  Results are cached on disk.
+    """
+    if not show_title:
+        return {}
+    cache = _episode_cache_load()
+    key = f'{show_title.strip().lower()}:{language}'
+    if key in cache:
+        return {(int(k.split(".")[0]), int(k.split(".")[1])): v
+                for k, v in cache[key].items()}
+
+    result: Dict[Tuple[int, int], str] = {}
+    # 1. Find the "List of ... episodes" page
+    list_page = _search_page(f'List of {show_title} episodes', language)
+    pages: Dict[str, Optional[int]] = {}
+    if list_page:
+        wt = _get_wikitext(list_page, language)
+        if wt:
+            for pat in (r'\{\{:\s*([^}|]+?)\s*\}\}', r'\{\{Main\s*\|([^}|]+?)\s*\}\}'):
+                for pm in re.finditer(pat, wt):
+                    name = pm.group(1).strip()
+                    season = _season_from_page(name)
+                    if season and name not in pages:
+                        pages[name] = season
+    if not pages and list_page:
+        pages[list_page] = None  # parse the list page itself
+    if not pages:
+        # Fallback: search directly for a season-1-style page
+        fallback = _search_page(f'{show_title} season 1', language)
+        if fallback and _season_from_page(fallback):
+            pages[fallback] = _season_from_page(fallback)
+
+    # 2. Parse each page
+    for page, season in pages.items():
+        wt = _get_wikitext(page, language)
+        if not wt:
+            continue
+        for s, e, title in _parse_episode_blocks(wt, season):
+            if s not in result or (s, e) not in result:
+                result[(s, e)] = title
+
+    # Cache
+    try:
+        cache[key] = {f'{s}.{e}': t for (s, e), t in result.items()}
+        _episode_cache_save(cache)
+    except Exception:
+        pass
+    return result
+
+
+def _episode_cache_load() -> Dict:
+    path = _wiki_cache_path(_EP_CACHE_PATH_SUFFIX)
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _episode_cache_save(cache: Dict) -> None:
+    path = _wiki_cache_path(_EP_CACHE_PATH_SUFFIX)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+# ── Wikidata QID resolution (synonym normalisation) ─────────────────────────
+
+def get_entity_qid(title: str, language: str = 'en') -> Optional[str]:
+    """Return the Wikidata QID for *title* (via *language* Wikipedia), cached.
+
+    Two different titles that resolve to the same QID refer to the same
+    entity (e.g. 'Yuru Camp' vs 'Laid-Back Camp').
+    """
+    if not title:
+        return None
+    cache = _qid_cache_load()
+    key = f'{title.strip().lower()}:{language}'
+    if key in cache:
+        return cache[key]
+    qid = None
+    page = _search_page(title, language)
+    if page:
+        qid = _get_wikidata_id(page, language)
+    cache[key] = qid
+    try:
+        _qid_cache_save(cache)
+    except Exception:
+        pass
+    return qid
+
+
+def _qid_cache_load() -> Dict:
+    path = _wiki_cache_path(_QID_CACHE_PATH_SUFFIX)
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _qid_cache_save(cache: Dict) -> None:
+    path = _wiki_cache_path(_QID_CACHE_PATH_SUFFIX)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _year_from_infobox(page_titles: List[str], language: str) -> Optional[int]:
+    """Return the earliest premiere year found in infoboxes of *page_titles*."""
+    year_re = re.compile(
+        r'\|[ ]*(?:first_aired|last_aired|released|air_date|original_release)[ ]*='
+        r'[ ]*(?:\{\{[^{}]*\|)?(19|20)\d{2}',
+        re.IGNORECASE,
+    )
+    best = None
+    for title in page_titles:
+        if not title:
+            continue
+        wt = _get_wikitext(title, language)
+        if not wt:
+            continue
+        for m in year_re.finditer(wt):
+            y = int(re.search(r'(19|20)\d{2}', m.group(0)).group(0))
+            if best is None or y < best:
+                best = y
+        # continue scanning all candidates and take the minimum across them
+    return best
+
+
+def fetch_show_year(show_title: str, language: str = 'en') -> Optional[int]:
+    """Extract the premiere/release year from the show's Wikipedia infobox.
+
+    Returns int or None.  Cached in the episode-list cache file.
+    """
+    if not show_title:
+        return None
+    cache = _episode_cache_load()
+    key = f'year:{show_title.strip().lower()}:{language}'
+    if key in cache:
+        return cache[key]
+    # Earliest premiere year across the franchise: check season-1 page first
+    # (a franchise article may only describe later seasons), then the main page.
+    candidates = [f'{show_title} season 1', show_title,
+                  f'{show_title} (TV series)', f'{show_title} (anime)']
+    year = _year_from_infobox(candidates, language)
+    if year is None:
+        page = _search_page(show_title, language)
+        if page:
+            year = _year_from_infobox([page], language)
+    cache[key] = year
+    try:
+        _episode_cache_save(cache)
+    except Exception:
+        pass
+    return year

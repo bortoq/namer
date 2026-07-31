@@ -85,9 +85,17 @@ def generate_new_name(
         season_number: Explicit season number (overrides auto-detection).
         language: Two-letter language code (e.g. "en", "ru", "de").
 
+    Pipeline: every provider (filename, dirname, file, wikipedia, tvmaze,
+    tmdb) casts a feed; providers are clustered by agreement per field, the
+    strongest cluster wins, and the template is filled from the winning
+    values.  When the expensive fields (season/episode) are genuinely
+    disputed, the file is refused instead of being renamed with a guess.
+
     Returns:
         ``(new_basename, metadata_dict)``
     """
+    from namer.voting import vote, update_scores, Scores
+
     meta = parse_file(file_path)
     meta['_skip'] = False
     meta['_language_explicit'] = language_explicit
@@ -107,144 +115,26 @@ def generate_new_name(
         meta['dot_title'] = re.sub(r'\s+', '.', known_title.strip())
         meta['_title_enriched'] = True
 
-    # ── Season override ────────────────────────────────────────────────
-    if season_number > 0:
-        meta['season'] = season_number
+    # ep_title is NOT scraped from filename — comes only from enrichment (voting)
 
-    # ep_title is NOT scraped from filename — comes only from enrichment (TVmaze/TMDB/ffprobe)
+    # ── Directory title cleanup (before translation) ──────────────────
+    # A clean directory title ("Attack on Titan") wins over a filename
+    # with extra words ("Attack on Titan Final Season 01") so the
+    # wikipedia translation starts from the clean name.
+    if not known_title:
+        from namer.parser import title_from_path
+        dir_title = title_from_path(file_path)
+        if dir_title:
+            fn_title = meta.get('title', '') or ''
+            fn_lower, dir_lower = fn_title.lower(), dir_title.lower()
+            if (not fn_title or len(fn_title) < 3
+                    or (dir_lower != fn_lower and dir_lower in fn_lower
+                        and len(dir_title) < len(fn_title))):
+                meta['title'] = dir_title
+                meta['dot_title'] = re.sub(r'\s+', '.', dir_title.strip())
 
-    # ── Phase 1: Collect show name hints ───────────────────────────────
-
-    # 1a. ffprobe format tags — may contain show_name / embedded title
-    try:
-        from namer.ffprobe import get_format_metadata
-        ff_tags = get_format_metadata(file_path)
-        if ff_tags.get('show_name') and not known_title:
-            meta['title'] = ff_tags['show_name']
-            meta['dot_title'] = re.sub(r'\s+', '.', ff_tags['show_name'].strip())
-        if ff_tags.get('ep_title'):
-            meta['ep_title'] = ff_tags['ep_title']
-    except (ImportError, FileNotFoundError):
-        pass
-
-    # 1b. Directory path heuristic — use directory tree for show name
-    #     Also detect season from directory names (e.g. "Show S7", "Season 7")
-    from namer.parser import title_from_path, _SERIES_PATTERN
-    title_from_filename = known_title or meta.get('_original_title', meta.get('title', ''))
-    needs_dir_help = (
-        not meta['title']
-        or len(meta['title']) < 3
-        or meta['title'] == os.path.splitext(os.path.basename(file_path))[0]
-    )
-
-    dir_title = title_from_path(file_path) if (needs_dir_help or meta.get('title')) else ''
-    if dir_title:
-        fn_lower = meta.get('title', '').lower()
-        dir_lower = dir_title.lower()
-        # Prefer directory title when:
-        #   - original conditions (needs_dir_help), OR
-        #   - dir title is a clean subset of filename title (filename has extra junk)
-        prefer_dir = (
-            needs_dir_help
-            or (not meta['title'])
-            or (dir_lower != fn_lower and dir_lower in fn_lower and len(dir_title) < len(meta['title']))
-        )
-        if prefer_dir:
-            meta['title'] = dir_title
-            meta['dot_title'] = re.sub(r'\s+', '.', dir_title.strip())
-
-    # ── Season from directory path ────────────────────────────────────
-    # ── Season from directory path ────────────────────────────────────
-    # If season is the default (0 or 1 from fallback), walk up directories
-    # looking for "Sxx", "Season N", Japanese number words,
-    # Roman numerals, or trailing digits.
-    _SEASON_JAPANESE = {
-        'shi': 4, 'san': 3, 'ni': 2, 'two': 2, 'go': 5,
-        'roku': 6, 'nana': 7, 'shichi': 7, 'hachi': 8,
-        'kyuu': 9, 'ku': 9, 'juu': 10,
-    }
-    _SEROMS = {'i': 1, 'ii': 2, 'iii': 3, 'iv': 4, 'v': 5,
-               'vi': 6, 'vii': 7, 'viii': 8, 'ix': 9, 'x': 10}
-    if meta.get('is_series') and (meta.get('season') is None or meta['season'] in (0, 1)):
-        _start = os.path.dirname(os.path.abspath(file_path))
-        parent = _start
-        while parent:
-            dirname = os.path.basename(parent)
-            if not dirname or dirname == os.path.sep:
-                break
-            # SxxExx or Sxx pattern
-            m = _SERIES_PATTERN.search(dirname)
-            if m:
-                s = int(m.group('season'))
-                if s:
-                    meta['season'] = s
-                    break
-            # "Season N" pattern
-            m = re.search(r'season\s*(\d{1,2})', dirname, re.IGNORECASE)
-            if m:
-                s = int(m.group(1))
-                if s:
-                    meta['season'] = s
-                    break
-            # "Part N", "Vol N", "Volume N"
-            m = re.search(r'(?:part|vol|volume)\s*(\d{1,2})', dirname, re.IGNORECASE)
-            if m:
-                s = int(m.group(1))
-                if s:
-                    meta['season'] = s
-                    break
-            # "Specials" directory -> season 0 (standard convention)
-            if dirname.lower() in ('specials', 'special'):
-                meta['season'] = 0
-                break
-            # Compare dir with its parent: if dir starts with parent name,
-            # the extra suffix may contain the season indicator.
-            # Catches anime like "Natsume Yuujinchou Shi" (parent "Natsume Yuujinchou").
-            _next_parent = os.path.dirname(parent)
-            parent_name = os.path.basename(_next_parent) if _next_parent and _next_parent != parent else ''
-            suffix = ''
-            if parent_name:
-                _norm = lambda s: re.sub(r'[._\s\-\[\]()]+', ' ', s).strip().lower()
-                pn = _norm(parent_name)
-                dn = _norm(dirname)
-                if dn.startswith(pn + ' '):
-                    suffix = dn[len(pn):].strip()
-                    if suffix:
-                        for word, season_num in _SEASON_JAPANESE.items():
-                            if re.search(rf'\b{word}\b', suffix):
-                                meta['season'] = season_num
-                                break
-                if meta.get('season') not in (0, 1, None):
-                    break
-                if suffix:
-                    for rom, season_num in _SEROMS.items():
-                        if re.search(rf'\b{rom}\b', suffix):
-                            meta['season'] = season_num
-                            break
-                if meta.get('season') not in (0, 1, None):
-                    break
-            # Trailing digits: dir name ends with space/dot + 1-2 digits
-            m = re.search(r'(?:^|[\s.])(\d{1,2})$', dirname)
-            if m:
-                s = int(m.group(1))
-                if 1 <= s <= 50:
-                    meta['season'] = s
-                    break
-            parent = os.path.dirname(parent)
-
-    # Special episodes (OVA, [Special], etc.): map to season 0.
-    # Only overrides the default season=1; explicit -sn or directory
-    # detection takes precedence.
-    if meta.get('is_special') and meta.get('is_series') and meta.get('season', 0) == 1:
-        meta['_original_season'] = meta['season']
-        meta['season'] = 0
-
-    # ── Phase 2: Episode title enrichment ──────────────────────────────
-    # ── Phase 2: Title & episode enrichment (multiple sources) ─────
-
-    # 2a. Wikipedia — auto-detect source language, find translated title (free, no key).
-    #     Runs for movies, series, and anime to correct the show/movie title.
-    #     Must run BEFORE TVmaze/TMDB so corrected title helps those lookups.
+    # ── Language validation + Wikipedia title translation ──────────────
+    # Runs before the feeds so the corrected title helps online lookups.
     if meta.get("title"):
         try:
             from namer.wikipedia import enrich_title_via_wiki, is_valid_language, _detect_language
@@ -268,52 +158,41 @@ def generate_new_name(
         except Exception:
             pass
 
-    # 2b. TVmaze — always try for series (free, no key).
-    #     Fills ep_title and may correct the show title.
-    if meta['is_series'] and meta['title'] and meta.get('episode'):
-        try:
-            from namer.tvmaze import enrich_episode_titles
-            title_before = meta.get('title', '')
-            ep_title_before = meta.get('ep_title', '')
-            enrich_episode_titles(meta, language=language)
-            if meta.get('title', '') != title_before or meta.get('ep_title', '') != ep_title_before:
-                meta['_title_enriched'] = True
-        except Exception:
-            pass
+    # ── Round 1: local providers vote on season/episode ────────────────
+    from namer.providers import local_feeds, online_feeds
+    scores: Scores = {}  # per-run success ratings (tie-break for votes)
+    local = local_feeds(file_path, known_title)
+    v1 = vote(local, scores)
 
-    # 2c. TMDB enrichment (episode titles + year) if key provided.
-    #     Can also correct movie/series title via localized version.
-    if tmdb_key:
-        from namer.enricher import enrich_meta
-        title_before = meta.get('title', '')
-        ep_before = meta.get('ep_title', '')
-        meta = enrich_meta(meta, tmdb_key, language)
-        if meta.get('title', '') != title_before or meta.get('ep_title', '') != ep_before:
-            meta['_title_enriched'] = True
+    refused = [f for f in ('season', 'episode') if f in v1 and not v1[f].usable]
+    for f in ('season', 'episode'):
+        if f in v1 and v1[f].usable:
+            meta[f] = v1[f].value
+    # An unresolved/refused season must not feed episode-title lookups;
+    # an accepted one is no longer an assumption.
+    meta['season_assumed'] = 'season' in refused
+    meta['_refused_fields'] = refused
 
-    # 2d. ep_title is required if template uses it — validation below will catch emptiness.
+    # Explicit season override resolves any dispute.
+    if season_number > 0:
+        meta['season'] = season_number
+        meta['season_assumed'] = False
+        if 'season' in refused:
+            refused.remove('season')
+        meta['_refused_fields'] = refused
 
-    # ── Phase 3: Technical metadata (ffprobe) ─────────────────────────
-    try:
-        from namer.ffprobe import enrich_from_file
-        fmeta = enrich_from_file(file_path)
-        if fmeta.get('codec'):
-            meta['codec'] = fmeta['codec']
-        if fmeta.get('resolution'):
-            meta['resolution'] = f"{fmeta['resolution']}p"
-        if fmeta.get('hdr'):
-            meta['hdr'] = fmeta['hdr']
-        if fmeta.get('audio'):
-            meta['audio'] = fmeta['audio']
-        if fmeta.get('audio_lang'):
-            meta['audio_lang'] = fmeta['audio_lang']
-        if fmeta.get('sub_lang'):
-            meta['sub_lang'] = fmeta['sub_lang']
-        if fmeta.get('channels'):
-            meta['channels'] = fmeta['channels']
-    except (ImportError, FileNotFoundError):
-        pass
+    # ── Round 2: online providers vote on title/year/ep_title ──────────
+    online = online_feeds(meta, tmdb_key, language) if meta.get('title') else []
+    all_feeds = local + online
+    v = vote(all_feeds, scores)
+    update_scores(scores, all_feeds, v)
 
+    # Apply usable verdicts (accept + guess) to the metadata dict.
+    for f, verdict in v.items():
+        if verdict.usable and f not in ('season', 'episode'):
+            meta[f] = verdict.value
+    if meta.get('title'):
+        meta['dot_title'] = re.sub(r'\s+', '.', str(meta['title']).strip())
     # ── Choose template ─────────────────────────────────────────────
     basename = os.path.basename(file_path)
 
@@ -328,12 +207,17 @@ def generate_new_name(
     else:
         template = TEMPLATE_SERIES if meta.get('is_series') else TEMPLATE_MOVIE
 
-    # ── Validation: skip if metadata too incomplete ─────────────────
+    # ── Validation: skip if metadata too incomplete or disputed ─────
     if not meta.get('title') or len(meta['title']) < 2:
         return basename, meta
     if _template_uses(template, 'season') and meta.get('season') is None:
         return basename, meta
     if _template_uses(template, 'episode') and meta.get('episode') is None:
+        return basename, meta
+    # Disputed expensive fields → refuse rather than guess.
+    if 'season' in meta.get('_refused_fields', []) and _template_uses(template, 'season'):
+        return basename, meta
+    if 'episode' in meta.get('_refused_fields', []) and _template_uses(template, 'episode'):
         return basename, meta
     # ep_title is required when template uses it — skip if missing
     if _template_uses(template, 'ep_title') and not meta.get('ep_title'):

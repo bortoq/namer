@@ -79,12 +79,18 @@ _SPECIAL_EPISODE_MARKERS = re.compile(
 )
 
 def parse_season_episode(file_name: str) -> Tuple[Optional[int], Optional[int]]:
-    """Extract (season, episode) from a filename.
+    """Extract (season, episode) from a filename.  Returns (None, None) if nothing found."""
+    season, episode, _ = _parse_season_episode_full(file_name)
+    return season, episode
 
-    Tries Sxx/SxxExx first, then standalone episode number (anime format).
-    If Sxx is found without Exx, continues to fallback patterns to find
-    the episode number (e.g. "Ep.01" in "Show.S01.Ep.01.avi").
-    Returns (None, None) if nothing found.
+
+def _parse_season_episode_full(file_name: str) -> Tuple[Optional[int], Optional[int], bool]:
+    """Extract (season, episode, season_assumed) from a filename.
+
+    *season_assumed* is True when the season is a weak default (1) taken from
+    the anime-style fallback patterns (" - 01", "[01]") rather than from an
+    explicit marker (Sxx / NxNN / N.NN.).  Voting treats assumed values as
+    non-committal: they fill in only when no explicit season exists.
     """
     season_from_series = None  # saved from Sxx match if no Exx found
 
@@ -94,7 +100,7 @@ def parse_season_episode(file_name: str) -> Tuple[Optional[int], Optional[int]]:
         season = int(m.group('season'))
         episode = int(m.group('episode')) if m.group('episode') else None
         if episode is not None:
-            return season, episode
+            return season, episode, False
         # Sxx without Exx — save season and continue to fallback patterns
         season_from_series = season
 
@@ -103,7 +109,7 @@ def parse_season_episode(file_name: str) -> Tuple[Optional[int], Optional[int]]:
     if m:
         season = int(m.group('season'))
         episode = int(m.group('episode'))
-        return season, episode
+        return season, episode, False
 
     # Fallback: standalone episode number like " - 01" or ".01." at end
     m = _EPISODE_FALLBACK.search(file_name)
@@ -111,27 +117,29 @@ def parse_season_episode(file_name: str) -> Tuple[Optional[int], Optional[int]]:
         ep = int(m.group('episode'))
         # Filter out years (>=1900) and common resolutions (480/576/720)
         if ep < 1900 and ep not in (480, 576, 720):
-            return (season_from_series or 1), ep
+            assumed = season_from_series is None
+            return (season_from_series or 1), ep, assumed
 
     # Episode in brackets: [01] or [01_of_74]
     m = _EPISODE_IN_BRACKETS.search(file_name)
     if m:
         ep = int(m.group('episode'))
         if ep < 1900 and ep not in (480, 576, 720):
-            return (season_from_series or 1), ep
+            assumed = season_from_series is None
+            return (season_from_series or 1), ep, assumed
 
     # "N.NN." format: already-formatted season.episode.
     m = _SEASON_DOT_EPISODE.search(file_name)
     if m:
         season = int(m.group('season'))
         episode = int(m.group('episode'))
-        return season, episode
+        return season, episode, False
 
     # If we had Sxx but no episode was found by any fallback, return (season, None)
     if season_from_series is not None:
-        return season_from_series, None
+        return season_from_series, None, False
 
-    return None, None
+    return None, None, False
 
 
 def extract_ext(file_name: str) -> str:
@@ -375,7 +383,7 @@ def parse_file(file_path: str) -> dict:
     basename = os.path.basename(file_path)
 
     ext = extract_ext(basename)
-    season, episode = parse_season_episode(basename)
+    season, episode, season_assumed = _parse_season_episode_full(basename)
     year = extract_year(basename)
     quality: QualityInfo = parse_quality(basename)
 
@@ -419,6 +427,7 @@ def parse_file(file_path: str) -> dict:
         'is_special': is_special,
         'season': season or 0,
         'episode': episode or 0,
+        'season_assumed': bool(season_assumed),
         'ext': ext,
         'year': year or 0,
         'quality': quality_label,

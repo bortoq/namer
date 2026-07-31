@@ -181,6 +181,38 @@ def get_episodes(show_id: int, language: str = 'en') -> List[Dict]:
             if ep.get('type') == 'regular']
 
 
+def fetch_show_meta(title: str, language: str = 'en') -> Optional[Dict]:
+    """Return {'title': canonical_name, 'year': premiere_year} for *title*.
+
+    Uses the TVmaze show record; results are disk-cached.  Returns None if
+    the show cannot be found.  Canonical name is the English name TVmaze
+    uses (e.g. 'Laid-Back Camp' for 'Yuru Camp').
+    """
+    if not title:
+        return None
+    cache = _load_cache()
+    cache_key = f"showmeta:{title.lower().strip()}:{language}"
+    if cache_key in cache:
+        return cache[cache_key]
+
+    show_id = search_show(title, language)
+    if not show_id:
+        return None
+    data = _api_get(f'/shows/{show_id}', {'language': language})
+    if not data:
+        return None
+    meta = {
+        'title': data.get('name', ''),
+        'year': None,
+    }
+    premiered = data.get('premiered')  # 'YYYY-MM-DD'
+    if premiered and len(premiered) >= 4 and premiered[:4].isdigit():
+        meta['year'] = int(premiered[:4])
+    cache[cache_key] = meta
+    _save_cache(cache)
+    return meta
+
+
 def enrich_episode_titles(meta: Dict, protect_filename: bool = False, language: str = 'en') -> Dict:
     """Look up episode titles from TVmaze and fill *meta['ep_title']*.
 
@@ -242,6 +274,17 @@ def enrich_episode_titles(meta: Dict, protect_filename: bool = False, language: 
         if all_eps:
             cache[all_key] = all_eps
             _save_cache(cache)
+
+    # Canonical show name + premiere year (voting feeds use these).
+    # Only set when a show was actually resolved, and keep the episode title
+    # behaviour unchanged.
+    if show_id:
+        smeta = fetch_show_meta(title, language)
+        if smeta:
+            if smeta.get('title') and smeta['title'].lower() != title.lower():
+                meta['title'] = smeta['title']
+            if smeta.get('year'):
+                meta['year'] = smeta['year']
 
     # Find the matching episode
     if meta.get('is_special'):
