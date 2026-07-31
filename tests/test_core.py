@@ -354,3 +354,89 @@ class TestVotingPipeline:
         assert meta['season'] == 1
         assert meta['episode'] == 1
         assert '01.01.' in name, f"name={name!r}"
+
+
+class TestSanitizeFilename:
+    """Forbidden filename characters are replaced with the Unicode
+    lookalikes configured in settings.INVALID_CHAR_REPLACEMENTS."""
+
+    def test_lookalike_replacement_1to1(self):
+        from namer.core import _sanitize_filename
+        assert _sanitize_filename('?') == '\uff1f'                    # ？
+        assert _sanitize_filename('*') == '\u2731'                    # ✱
+        assert _sanitize_filename(':') == '\u2236'                    # ∶
+        assert _sanitize_filename('/') == '\u2215'                    # ∕
+        assert _sanitize_filename('\\') == '\u2216'                   # ∖
+        assert _sanitize_filename('<') == '\u2039'                    # ‹
+        assert _sanitize_filename('>') == '\u203a'                    # ›
+
+    def test_quotes_alternate_open_close(self):
+        from namer.core import _sanitize_filename
+        assert _sanitize_filename('"Matrix"') == '\u201cMatrix\u201d'
+        assert _sanitize_filename('"a" and "b"') == '\u201ca\u201d and \u201cb\u201d'
+
+    def test_user_examples(self):
+        from namer.core import _sanitize_filename
+        cases = {
+            'Lost S02E21 - ?.mp4': 'Lost S02E21 - \uff1f.mp4',
+            '\u0421\u0431\u043e\u0440\u043d\u0438\u043a ***.mp3':
+                '\u0421\u0431\u043e\u0440\u043d\u0438\u043a \u2731\u2731\u2731.mp3',
+            '\u041b\u0435\u043a\u0446\u0438\u044f 1: \u0412\u0432\u0435\u0434\u0435\u043d\u0438\u0435.mkv':
+                '\u041b\u0435\u043a\u0446\u0438\u044f 1\u2236 \u0412\u0432\u0435\u0434\u0435\u043d\u0438\u0435.mkv',
+            '\u041f\u0440\u043e\u0435\u043a\u0442 2026/07.docx':
+                '\u041f\u0440\u043e\u0435\u043a\u0442 2026\u221507.docx',
+            '\u041f\u0430\u043f\u043a\u0430 \\ \u0410\u0440\u0445\u0438\u0432.zip':
+                '\u041f\u0430\u043f\u043a\u0430 \u2216 \u0410\u0440\u0445\u0438\u0432.zip',
+            '\u0424\u0438\u043b\u044c\u043c "Матрица".mkv':
+                '\u0424\u0438\u043b\u044c\u043c \u201cМатрица\u201d.mkv',
+            '\u042d\u043f\u0438\u0437\u043e\u0434 <Режиссерская версия>.mkv':
+                '\u042d\u043f\u0438\u0437\u043e\u0434 \u2039Режиссерская версия\u203a.mkv',
+        }
+        for raw, expected in cases.items():
+            assert _sanitize_filename(raw) == expected, raw
+
+    def test_pipe_and_control_chars_fall_back_to_underscore(self):
+        from namer.core import _sanitize_filename
+        assert _sanitize_filename('a|b') == 'a_b'
+        assert _sanitize_filename('a\x01b\x1fb') == 'a_b_b'  # control → _
+        assert '\x00' not in _sanitize_filename('\x00')
+
+    def test_trailing_dots_and_spaces_stripped(self):
+        from namer.core import _sanitize_filename
+        assert _sanitize_filename('Name.. ') == 'Name'
+        assert _sanitize_filename('Name.') == 'Name'
+
+    def test_idempotent(self):
+        from namer.core import _sanitize_filename
+        once = _sanitize_filename('Фильм "Матрица": ?.mkv')
+        assert _sanitize_filename(once) == once
+
+    def test_lookalikes_are_not_forbidden(self):
+        from namer import settings
+        for good in settings.INVALID_CHAR_REPLACEMENTS.values():
+            chars = good if isinstance(good, str) else ''.join(good)
+            for ch in chars:
+                assert ch not in settings.INVALID_CHARS, ch
+
+    def test_format_template_applies_replacements(self):
+        """The rename pipeline runs the table: ep_title with : and ? keeps
+        a readable lookalike instead of an underscore."""
+        from namer.core import _format_template
+        name = _format_template(
+            '{ep_title}.{ext}',
+            {'ep_title': 'Вопрос: кто?', 'ext': 'mkv'},
+        )
+        assert name == 'Вопрос\u2236 кто\uff1f.mkv', name
+
+
+class TestInvalidCharsSetting:
+    def test_every_replacement_key_is_invalid(self):
+        from namer import settings
+        for bad in settings.INVALID_CHAR_REPLACEMENTS:
+            assert bad in settings.INVALID_CHARS, bad
+
+    def test_pair_values_have_two_chars(self):
+        from namer import settings
+        for good in settings.INVALID_CHAR_REPLACEMENTS.values():
+            if isinstance(good, (tuple, list)):
+                assert len(good) == 2, good

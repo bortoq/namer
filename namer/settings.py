@@ -37,3 +37,35 @@ TEMPLATE_SERIES = '{season:02d}.{episode:02d}. {ep_title}.{ext}'
 # (network requests with timeouts), so a handful of workers hides
 # per-request latency; keep it small to stay polite to the APIs.
 MAX_CONCURRENT_FILES = 4
+
+# ── Invalid filename characters ──────────────────────────────────────────
+# Characters forbidden in filenames (Windows NTFS/FAT/exFAT and POSIX).
+INVALID_CHARS = frozenset('\\/:*?"<>|') | frozenset(chr(c) for c in range(0x20))
+
+# Unicode lookalikes for forbidden characters, so a readable name survives
+# instead of being mangled into underscores.  A value may be:
+#   - a string: the character is replaced 1:1;
+#   - an (open, close) pair: the first occurrence becomes *open*, the
+#     second *close*, and so on — paired quotes come out as “...” rather
+#     than “...“.
+# Forbidden characters without an entry fall back to '_' (see core.py).
+#
+#   forbidden  →  replacement                  example
+#   ?          →  ？ fullwidth question mark    Lost S02E21 - ？.mp4
+#   *          →  ✱ heavy asterisk              Сборник ✱✱✱.mp3
+#   :          →  ∶ ratio sign                  Лекция 1∶ Введение.mkv
+#   /          →  ∕ division slash              Проект 2026∕07.docx
+#   \          →  ∖ set minus                   Папка ∖ Архив.zip
+#   "          →  “ ” smart double quotes       Фильм “Матрица”.mkv
+#   <          →  ‹ single left angle           Эпизод ‹Режиссерская версия›.mkv
+#   >          →  › single right angle
+INVALID_CHAR_REPLACEMENTS = {
+    '?': '？',
+    '*': '✱',
+    ':': '∶',
+    '/': '∕',
+    '\\': '∖',
+    '"': ('“', '”'),
+    '<': '‹',
+    '>': '›',
+}

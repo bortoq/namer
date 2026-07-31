@@ -19,15 +19,41 @@ def _template_uses(template: str, field: str) -> bool:
     return False
 
 
+def _apply_char_replacements(name: str) -> str:
+    """Map forbidden filename characters to their configured Unicode
+    lookalikes (settings.INVALID_CHAR_REPLACEMENTS).  Paired values
+    alternate open/close so quotes come out as \u201c...\u201d."""
+    for bad, good in settings.INVALID_CHAR_REPLACEMENTS.items():
+        if isinstance(good, str):
+            name = name.replace(bad, good)
+        elif isinstance(good, (tuple, list)) and len(good) == 2:
+            out = []
+            toggle = False
+            for ch in name:
+                if ch == bad:
+                    out.append(good[1] if toggle else good[0])
+                    toggle = not toggle
+                else:
+                    out.append(ch)
+            name = ''.join(out)
+    return name
+
+
+# Remaining forbidden characters (see settings.INVALID_CHARS) become '_'.
+_FORBIDDEN_RE = re.compile('[' + re.escape(''.join(settings.INVALID_CHARS)) + ']')
+
+
 def _sanitize_filename(name: str) -> str:
     """Replace filesystem-invalid characters with safe alternatives.
 
-    Handles characters invalid on Windows (NTFS/FAT/exFAT) and POSIX:
-      \\  /  :  *  ?  "  <  >  |  and control chars (0x00-0x1F).
-    Also replaces trailing dots/spaces which are invalid on Windows.
+    Characters with a configured Unicode lookalike
+    (settings.INVALID_CHAR_REPLACEMENTS) keep the name readable; the rest
+    of the characters forbidden on Windows (NTFS/FAT/exFAT) and POSIX
+    (\\  /  :  *  ?  "  <  >  |  and control chars 0x00-0x1F) become '_'.
+    Also strips trailing dots/spaces which are invalid on Windows.
     """
-    # Replace invalid chars with underscore
-    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '_', name)
+    name = _apply_char_replacements(name)
+    name = _FORBIDDEN_RE.sub('_', name)
     # Windows forbids trailing dot or space
     name = re.sub(r'[. ]+$', '', name)
     return name
