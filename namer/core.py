@@ -260,9 +260,9 @@ def rename_file(
 
     If *reserved* set is provided, it tracks destinations claimed within
     a batch to prevent intra-batch collisions in dry-run mode.
-    With *quiet*, the per-file success line is suppressed (the caller
-    prints the history after the progress region closes); the resolved
-    destination basename is then appended to *resolved* if given.
+    With *quiet*, the per-file success line is suppressed (the scrolling
+    progress region already shows the result); the resolved destination
+    basename is then appended to *resolved* if given.
     Returns True on success (or simulated success in dry-run).
     """
     directory = os.path.dirname(file_path) or '.'
@@ -337,8 +337,9 @@ def process_directory(
     because lookups are network-bound; the rename pass itself stays
     sequential so intra-batch destination conflicts are resolved safely.
     A live progress region (one line per file) is drawn on stderr when
-    the terminal supports it; the per-file history is printed to stdout
-    after the region closes.
+    the terminal supports it; finished lines stay on screen and scroll.
+    Diagnostics (skip reasons) are printed to stderr after the region
+    stops, but there is no per-file rename log on stdout.
 
     Validates metadata first: if season or title could not be determined,
     prints a recommendation and exits early.
@@ -364,8 +365,7 @@ def process_directory(
 
     max_workers = getattr(settings, 'MAX_CONCURRENT_FILES', 4) or 1
     progress = Progress(total=total,
-                        mode='dry-run' if dry_run else 'rename',
-                        max_concurrent=max_workers)
+                        mode='dry-run' if dry_run else 'rename')
     live = progress.is_live()
     results: List[Optional[Tuple[str, str, dict, object]]] = [None] * total
 
@@ -417,8 +417,8 @@ def process_directory(
     # ── Pass 2 (sequential): renames, warn on skips ─────────────────────
     renamed = 0
     reserved: set = set()  # claimed destinations, avoids intra-batch clashes
-    history: List[str] = []   # stdout lines, printed after the live region
     warnings: List[str] = []  # stderr lines, printed after the live region
+    interrupted = False
 
     try:
         for result in results:
@@ -427,16 +427,16 @@ def process_directory(
             fpath, new_name, meta, handle = result
             basename = os.path.basename(fpath)
 
-            if verbose and not live:
-                rel = os.path.relpath(fpath, directory)
-                if rel != basename:
-                    history.append(f'\n[{rel}]')
-
             if handle.state == 'done':  # errored during generation
                 if meta.get('_skip_reason'):
                     warnings.append(f'  \u26a0 {basename}')
                     warnings.append(f'    skipped — {meta["_skip_reason"]}')
                 continue
+
+            if verbose and not live:
+                rel = os.path.relpath(fpath, directory)
+                if rel != basename:
+                    print(f'[{rel}]', file=sys.stderr)
 
             # Determine effective template (same logic as generate_new_name)
             if pattern:
@@ -465,8 +465,6 @@ def process_directory(
                 continue
 
             if not new_name or new_name == basename:
-                if verbose:
-                    history.append(f'  = {basename} (unchanged)')
                 handle.finish('unchanged')
                 continue
 
@@ -474,26 +472,24 @@ def process_directory(
             resolved_names: List[str] = []
             success = rename_file(fpath, new_name, dry_run, reserved=reserved,
                                   quiet=True, resolved=resolved_names)
-            dest_basename = resolved_names[-1] if resolved_names else new_name
             if success or dry_run:
                 renamed += 1
+                if resolved_names:
+                    handle.set_new_name(resolved_names[-1])  # show real dest
                 handle.finish('renamed')
-                marker = 'mv' if dry_run else '\u2713'
-                history.append(f'  {marker} "{basename}" \u2192 "{dest_basename}"')
             else:
                 handle.finish('error')
     except KeyboardInterrupt:
-        print('\nInterrupted during rename pass.', file=sys.stderr)
-        print(f'Renamed {renamed}/{total} files before interrupt.')
+        interrupted = True
     except Exception:
         progress.close()
         raise
 
     progress.close()
 
-    # ── Deferred output (the live region is gone by now) ────────────────
-    for line in history:
-        print(line)
+    if interrupted:
+        print('\nInterrupted during rename pass.', file=sys.stderr)
+        print(f'Renamed {renamed}/{total} files before interrupt.')
     for line in warnings:
         print(line, file=sys.stderr)
 

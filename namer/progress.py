@@ -1,11 +1,15 @@
 """Live progress display for batch operations.
 
-One file = one line.  On a TTY the lines are redrawn in place on stderr
-using ANSI cursor moves (throttled to ~10 Hz); on a pipe or file a
-compact one-line-per-completion log is written instead.  Every state
-change is guarded by a lock, so worker threads may update freely.
+One file = one line.  Lines accumulate: finished files stay visible and
+scroll with the terminal, the summary is always the last line.  On a TTY
+the lines are redrawn in place on stderr using ANSI cursor moves
+(throttled to ~10 Hz); once the region is taller than the terminal only
+the visible tail is rewritten and the older lines scroll into the
+terminal's scrollback.  On a pipe or file a compact line is logged per
+completed file instead.  Every state change is guarded by a lock, so
+worker threads may update freely.
 
-The caller prints the final per-file results to stdout after ``close()``.
+The caller prints diagnostics (skip reasons) to stderr after ``close()``.
 """
 
 import os
@@ -55,6 +59,14 @@ def truncate(text: str, max_width: int) -> str:
     return result + _ELLIPSIS
 
 
+def visible_window(lines, height: int) -> list:
+    """Tail of *lines* that fits the terminal: the last *height* rows.
+
+    Older rows are left in the terminal scrollback and are not redrawn.
+    """
+    return lines[-min(len(lines), height):]
+
+
 class Task:
     """One file's progress line.  All methods are thread-safe."""
 
@@ -92,7 +104,7 @@ class Task:
             self.progress._touch_locked()
 
     def park(self):
-        """Generation finished; hide the line until the rename pass."""
+        """Generation finished; the line stays and shows the rendered name."""
         with self.progress._lock:
             if self.state != 'active':
                 return
@@ -114,7 +126,7 @@ class Task:
             self.progress._touch_locked()
 
     def finish(self, status: str):
-        """Mark the file processed; its line leaves the live region."""
+        """Mark the file processed; its line stays on screen (scrolls)."""
         with self.progress._lock:
             if self.state == 'done':
                 return
@@ -125,26 +137,26 @@ class Task:
             self.progress._done += 1
             self.progress._touch_locked()
             if not self.progress._use_ansi:
-                self.progress._write(
-                    f'  {status} [{self.index}/{self.total}] {self.basename}\n')
+                line = f'  {status} [{self.index}/{self.total}] {self.basename}'
+                if self.new_name:
+                    line += f'{_ARROW}{self.new_name}'
+                self.progress._write(line + '\n')
 
 
 class Progress:
-    """Batch progress: one live line per in-flight file + a bottom summary.
+    """Batch progress: one line per file (finished ones stay visible).
 
     Args:
         total: Number of files in the batch.
         mode:  Bottom-line label ('dry-run' or 'rename').
-        max_concurrent: Upper bound on simultaneously shown lines.
         stream: Where to draw (defaults to stderr).
         enabled: Force live region on/off; None = auto-detect TTY.
     """
 
     def __init__(self, total: int, mode: str = 'rename',
-                 max_concurrent: int = 4, stream=None, enabled=None):
+                 stream=None, enabled=None):
         self.total = max(int(total), 1)
         self.mode = mode
-        self.max_concurrent = max(1, int(max_concurrent) or 1)
         self._stream = stream if stream is not None else sys.stderr
         self._use_ansi = enabled if enabled is not None else bool(
             getattr(self._stream, 'isatty', lambda: False)())
@@ -154,7 +166,7 @@ class Progress:
         self._done = 0
         self._queued = 0      # parked, awaiting the rename pass
         self._closed = False
-        self._drawn = 0       # lines currently occupying the region
+        self._drawn = 0       # lines rendered so far (never shrinks)
         self._dirty = False
         self._last_render = 0.0
         self._timer = None
@@ -176,17 +188,21 @@ class Progress:
         return self._use_ansi
 
     def close(self):
-        """Erase the live region and print the final summary line."""
+        """Stop the region: keep the lines on screen, restore the cursor
+        and leave it on a fresh line below them."""
         with self._lock:
             if self._closed:
                 return
-            self._closed = True
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
+            if self._use_ansi and self._dirty:
+                self._render_locked()  # show the final state
+            self._closed = True
             if self._use_ansi and self._drawn:
-                self._erase_region_locked()
-            self._write(self._bottom_locked() + '\n')
+                self._write('\x1b[?25h\n')  # keep region, cursor below it
+            else:
+                self._write(self._bottom_locked() + '\n')
 
     # ── internals ────────────────────────────────────────────────────────
 
@@ -219,64 +235,56 @@ class Progress:
         if not self._dirty or self._closed:
             return
         width = self._width()
+        height = max(3, self._height())
         lines = []
         for i in self._order:
             t = self._tasks.get(i)
-            if t is not None and t.state == 'active':
+            if t is not None:
                 lines.append(self._format_line(t, width))
         lines.append(self._bottom_locked())
         self._last_render = time.monotonic()
         self._dirty = False
 
         out = self._stream
-        n_prev, n_new = self._drawn, len(lines)
+        window = visible_window(lines, height)
         if self._drawn == 0:
             out.write('\x1b[?25l')  # hide cursor while live
         else:
-            out.write(f'\x1b[{self._drawn}A\r')  # up to region start
-        for j, line in enumerate(lines):
-            if j < n_prev:
-                out.write('\x1b[2K')  # erase previous content of this row
-            out.write(line + '\n')
-        if n_new < n_prev:  # region shrank: clear leftover rows
-            for _ in range(n_prev - n_new):
-                out.write('\x1b[2K\n')
-            out.write(f'\x1b[{n_prev - n_new}A')  # back below new region
-        self._drawn = n_new
+            out.write(f'\x1b[{min(self._drawn, height) - 1}A\r')
+        for j, ln in enumerate(window):
+            out.write('\x1b[2K')  # erase previous content of this row
+            if j < len(window) - 1:
+                out.write(ln + '\n')
+            else:
+                out.write(ln + '\r')  # stay on the last row for redraws
+        self._drawn = len(lines)
         out.flush()
-
-    def _erase_region_locked(self):
-        out = self._stream
-        out.write(f'\x1b[{self._drawn}A\r')
-        for j in range(self._drawn):
-            out.write('\x1b[2K')
-            if j < self._drawn - 1:
-                out.write('\n')
-        out.write('\x1b[?25h')  # show cursor again
-        out.flush()
-        self._drawn = 0
 
     def _format_line(self, t: Task, width: int) -> str:
         prefix = f'{t.index:>{len(str(t.total))}}/{t.total} '
-        filled = t.stage * (_BAR_WIDTH // len(STAGES)) if t.stage else 0
+        if t.state == 'done':
+            filled = _BAR_WIDTH
+            action = t.status if t.status else 'done'
+        else:
+            filled = t.stage * (_BAR_WIDTH // len(STAGES)) if t.stage else 0
+            action = STAGES[t.stage - 1] if t.stage else ''
         bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
-        action = STAGES[t.stage - 1] if t.stage else ''
         fixed = display_width(prefix) + _BAR_WIDTH + 3 + display_width(action) + 3
         remaining = width - fixed
         if t.new_name:
             body = remaining - display_width(_ARROW)
             old = truncate(t.basename, body * 3 // 5)
             new = truncate(t.new_name, body * 2 // 5)
-            line = f'{prefix}[{bar}] {action} \u00b7 {old}{_ARROW}{new}'
-        else:
-            old = truncate(t.basename, remaining)
-            line = f'{prefix}[{bar}] {action} \u00b7 {old}'
-        return line
+            return f'{prefix}[{bar}] {action} \u00b7 {old}{_ARROW}{new}'
+        old = truncate(t.basename, remaining)
+        return f'{prefix}[{bar}] {action} \u00b7 {old}'
 
     def _bottom_locked(self) -> str:
-        bottom = f'{self.mode}: {self._done}/{self.total} \u0444\u0430\u0439\u043b\u043e\u0432 \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043e'
+        bottom = (f'{self.mode}: {self._done}/{self.total} '
+                  f'\u0444\u0430\u0439\u043b\u043e\u0432 \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043e')
         if self._queued:
-            bottom += f' \u00b7 {self._queued} \u0433\u043e\u0442\u043e\u0432\u043e \u043a \u043f\u0435\u0440\u0435\u0438\u043c\u0435\u043d\u043e\u0432\u0430\u043d\u0438\u044e'
+            bottom += (f' \u00b7 {self._queued} '
+                       f'\u0433\u043e\u0442\u043e\u0432\u043e \u043a \u043f\u0435\u0440\u0435\u0438\u043c\u0435\u043d\u043e\u0432\u0430\u043d\u0438\u044e')
         return bottom
 
     def _width(self) -> int:
@@ -285,3 +293,10 @@ class Progress:
         except (OSError, ValueError, AttributeError):
             size = shutil.get_terminal_size()
         return max(40, size.columns)
+
+    def _height(self) -> int:
+        try:
+            size = os.get_terminal_size(self._stream.fileno())
+        except (OSError, ValueError, AttributeError):
+            size = shutil.get_terminal_size()
+        return max(3, size.lines)
