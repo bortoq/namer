@@ -26,7 +26,7 @@ STAGES = ('querying providers', 'parsing feeds', 'voting', 'rendering', 'renamin
 _STAGE_IDX = {name: i for i, name in enumerate(STAGES, start=1)}
 
 _BAR_FILLED = '\u2588'   # █
-_BAR_EMPTY = '\u2591'    # ░
+_BAR_EMPTY = ' '          # empty cells are blank, like a plain CLI
 _ELLIPSIS = '\u2026'     # …
 _ARROW = ' \u2192 '      # →
 _BAR_WIDTH = 20
@@ -214,8 +214,7 @@ class Progress:
                         self._write('\r\x1b[2K')
                     self._activity = None
                     self._activity_text = ''
-                elif self._drawn:
-                    self._write('\n')
+                    self._write('\n')  # fresh line for the summary
                 if self._cursor_hidden:
                     self._write('\x1b[?25h')
             self._closed = True
@@ -238,7 +237,10 @@ class Progress:
             self._dirty = False
 
     def _append_locked(self, t: Task):
-        """Write the finished row at the bottom (appends, scrolls)."""
+        """Write the finished row exactly like a plain CLI line: the row
+        text followed by a newline.  Committed rows contain no escape
+        codes at all, so terminals scroll and buffer them exactly like
+        any normal command output."""
         if self._closed or not self._use_ansi:
             return
         line = self._format_line(t, self._width())
@@ -247,13 +249,10 @@ class Progress:
             out.write('\x1b[?25l')   # hide cursor while live
             self._cursor_hidden = True
         if self._activity is not None:
-            if self._cursor_hidden:
-                out.write('\r\x1b[2K')  # the live line becomes this row
+            out.write('\r\x1b[2K')  # the live line becomes this row
             self._activity = None
             self._activity_text = ''
-        elif self._drawn:
-            out.write('\n')             # fresh row; scrolls at the edge
-        out.write(line + '\r')
+        out.write(line + '\n')
         t.committed = True
         self._drawn += 1
         self._last_render = time.monotonic()
@@ -296,7 +295,7 @@ class Progress:
         if not self._cursor_hidden:
             out.write('\x1b[?25l')
             self._cursor_hidden = True
-        out.write('\r\x1b[2K' + line + '\r')
+        out.write('\r\x1b[2K' + line)
         self._activity_text = line
         self._last_render = time.monotonic()
         out.flush()
@@ -304,7 +303,7 @@ class Progress:
     def _format_line(self, t: Task, width: int) -> str:
         prefix = f'{t.index:>{len(str(t.total))}}/{t.total} '
         if t.state == 'done':
-            filled = _BAR_WIDTH
+            filled = _BAR_WIDTH if t.status == 'renamed' else 0
             action = t.status if t.status else 'done'
         else:
             filled = t.stage * (_BAR_WIDTH // len(STAGES)) if t.stage else 0

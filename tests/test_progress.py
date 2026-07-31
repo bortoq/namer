@@ -221,7 +221,7 @@ class TestProgressAnsiRegion:
         assert out.count('renamed \u00b7 file01.mkv') == 1
         assert out.count('renamed \u00b7 file30.mkv') == 1
         assert out.index('file01.mkv') < out.index('file30.mkv')
-        assert out.count('\n') >= 29
+        assert out.count('\n') == 30   # one newline per committed row
 
     def test_error_finish_during_generation_is_committed_later(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
@@ -237,6 +237,31 @@ class TestProgressAnsiRegion:
         assert p._drawn == 1
         p.close()
         assert 'error' in stream.getvalue()
+
+    def test_non_renamed_rows_show_empty_bar(self, monkeypatch):
+        monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
+        for status in ('skipped', 'unchanged', 'error'):
+            stream = io.StringIO()
+            p = self._progress(total=2, stream=stream)
+            t1 = p.task(1, 'a.mkv')
+            t1.park()
+            t1.finish(status)
+            p.close()
+            out = stream.getvalue()
+            first = out.split('\n')[0]
+            row = first.split('\r')[-1]  # committed row (after live-line erasings)
+            assert '[' + ' ' * 20 + ']' in row, status  # empty bar
+            assert '\u2588' not in row, status          # no filled cells
+
+    def test_renamed_row_gets_full_bar(self, monkeypatch):
+        monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
+        stream = io.StringIO()
+        p = self._progress(total=2, stream=stream)
+        t1 = p.task(1, 'a.mkv')
+        t1.park()
+        t1.finish('renamed')
+        p.close()
+        assert '\u2588' * 20 in stream.getvalue()
 
     def test_committed_row_shows_final_state(self, monkeypatch):
         monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
@@ -266,6 +291,28 @@ class TestProgressAnsiRegion:
         assert out.count('\n') == 0
         assert '2/2' in out
         assert 'voting' in out
+
+    def test_committed_rows_are_plain_newline_lines(self, monkeypatch):
+        """Committed rows must contain no \r and no escape codes — byte
+        identical to a normal CLI line, so any terminal scrolls/buffers
+        them exactly like `ls` output."""
+        monkeypatch.setattr('namer.progress._THROTTLE', 0.0)
+        stream = io.StringIO()
+        p = self._progress(total=2, stream=stream)
+        t1 = p.task(1, 'a.mkv')
+        t2 = p.task(2, 'b.mkv')
+        t1.park()
+        t2.park()
+        t1.finish('renamed')
+        t2.finish('skipped')
+        p.close()
+        out = stream.getvalue()
+        # committed rows: newline-terminated, no \r, no escape codes —
+        # byte identical to a plain CLI line (activity renders may use \r)
+        for row in ('renamed \u00b7 a.mkv', 'skipped \u00b7 b.mkv'):
+            idx = out.index(row)
+            assert out[idx:].startswith(row + '\n'), row
+            assert '\r' not in row and '\x1b' not in row
 
 class TestProcessDirectoryIntegration:
     """process_directory runs in parallel and defers history to stdout."""
