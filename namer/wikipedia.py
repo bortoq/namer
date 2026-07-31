@@ -9,7 +9,7 @@ Typical usage::
 
     meta = {'title': 'невидимый гость', 'is_series': False}
     enrich_title_via_wiki(meta)           # default target=en
-    enrich_title_via_wiki(meta, 'it')     # Italian: 'L'ospite invisibile'
+    enrich_title_via_wiki(meta, 'it')     # Italian: 'Contrattempo (film)'
 """
 
 import html
@@ -149,22 +149,25 @@ def _wiki_api(language: str, params: Dict) -> Optional[Dict]:
         return None
 
 
-def _search_page(title: str, language: str) -> Optional[str]:
-    """Search Wikipedia in *language* for *title*, return first result's page title.
-
-    Returns None if no page found.
-    """
+def _search_pages(title: str, language: str) -> List[str]:
+    """Search Wikipedia in *language* for *title*; return all result page titles."""
     data = _wiki_api(language, {
         'list': 'search',
         'srsearch': title,
         'srlimit': 3,
     })
     if not data:
-        return None
-    results = data.get('query', {}).get('search', [])
-    if not results:
-        return None
-    return results[0].get('title') or None
+        return []
+    return [r.get('title') for r in data.get('query', {}).get('search', []) if r.get('title')]
+
+
+def _search_page(title: str, language: str) -> Optional[str]:
+    """Search Wikipedia in *language* for *title*, return first result's page title.
+
+    Returns None if no page found.
+    """
+    results = _search_pages(title, language)
+    return results[0] if results else None
 
 
 def _get_langlink(page_title: str, from_lang: str, to_lang: str) -> Optional[str]:
@@ -264,13 +267,18 @@ def get_translated_title(foreign_title: str, target_lang: str = 'en', source_lan
 
     # Latin/unknown script — try English Wikipedia search.
     # English Wikipedia may still find the page (e.g. anime romaji titles).
+    # Search resolves redirects, so the first hit for a romaji/foreign title
+    # is usually the English-named article ('Yuru Camp' -> 'Laid-Back Camp').
+    # Concept pages have all-lowercase labels ('Dark' -> 'Darkness' ->
+    # 'darkness') and must not be treated as a title translation.
     if not source_lang:
         page_title = _search_page(foreign_title, 'en')
         if page_title:
             qid = _get_wikidata_id(page_title, 'en')
             if qid:
                 translated = _get_wikidata_label(qid, target_lang)
-                if translated and translated != foreign_title:
+                if (translated and translated != foreign_title
+                        and not translated.islower()):
                     return translated
         return foreign_title
 
@@ -278,27 +286,38 @@ def get_translated_title(foreign_title: str, target_lang: str = 'en', source_lan
     if source_lang == target_lang:
         return foreign_title
 
-    # Check cache
+    # Check cache (v2: ignores entries produced by older, buggier resolution)
     cache = _load_cache()
-    cache_key = f'{foreign_title.strip().lower()}:{source_lang}:{target_lang}'
+    cache_key = f'v2:{foreign_title.strip().lower()}:{source_lang}:{target_lang}'
     cached = cache.get(cache_key)
     if cached:
         return cached
 
-    # Search for the page in the source-language Wikipedia
-    page_title = _search_page(foreign_title, source_lang)
-    if not page_title:
+    # Search for the page in the source-language Wikipedia.  The first hit
+    # may be a generic/disambiguation page that is not the movie or series
+    # we want ('Тьма' -> the darkness concept), so scan all results.
+    page_titles = _search_pages(foreign_title, source_lang)
+    if not page_titles:
         return foreign_title
 
-    # Get target-language title via interlanguage link
-    translated = _get_langlink(page_title, source_lang, target_lang)
+    # Prefer a page that has an interlanguage link to the target language:
+    # a langlink proves the entity exists there, so it is a reliable
+    # translation.  The Wikidata-label fallback below is only used when no
+    # result has a langlink at all.
+    translated = None
+    for page_title in page_titles:
+        candidate = _get_langlink(page_title, source_lang, target_lang)
+        if candidate:
+            translated = candidate
+            break
     if not translated:
-        # Fallback: get Wikidata label in the target language.
-        # This is more reliable than search-based fallbacks because Wikidata
-        # is the central hub that all Wikipedia editions link to.
-        qid = _get_wikidata_id(page_title, source_lang)
-        if qid:
-            translated = _get_wikidata_label(qid, target_lang)
+        for page_title in page_titles:
+            qid = _get_wikidata_id(page_title, source_lang)
+            if qid:
+                candidate = _get_wikidata_label(qid, target_lang)
+                if candidate and (target_lang != 'en' or not candidate.islower()):
+                    translated = candidate
+                    break
 
     if not translated:
         return foreign_title
@@ -447,7 +466,14 @@ def _parse_episode_blocks(wikitext: str, default_season: Optional[int]) -> List[
         if _SPECIAL_HEADING_RE.search(current_heading):
             season = 0
         else:
-            season = default_season if default_season is not None else 1
+            # A page can hold several seasons inline under '== Season N =='
+            # headings (e.g. 'Dark (TV series)'); the heading is more specific
+            # than the caller-supplied default.
+            heading_season = _season_from_page(current_heading)
+            if heading_season is not None:
+                season = heading_season
+            else:
+                season = default_season if default_season is not None else 1
         result.append((season, ep_num, title))
     return result
 
@@ -494,7 +520,7 @@ def fetch_episode_titles(show_title: str, language: str = 'en') -> Dict[Tuple[in
         if not wt:
             continue
         for s, e, title in _parse_episode_blocks(wt, season):
-            if s not in result or (s, e) not in result:
+            if (s, e) not in result:  # first source wins
                 result[(s, e)] = title
 
     # Cache
