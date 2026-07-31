@@ -282,7 +282,7 @@ class TestProcessDirectoryIntegration:
         self._disable_online(monkeypatch)
         show = self._make_show(tmp_path)
         from namer.core import process_directory
-        renamed, total = process_directory(
+        renamed, total, errors = process_directory(
             str(show), pattern='{season:02d}.{episode:02d}.{ext}', dry_run=True)
         assert (renamed, total) == (2, 2)
         out, err = capsys.readouterr()
@@ -295,7 +295,7 @@ class TestProcessDirectoryIntegration:
         self._disable_online(monkeypatch)
         show = self._make_show(tmp_path)
         from namer.core import process_directory
-        renamed, total = process_directory(
+        renamed, total, errors = process_directory(
             str(show), pattern='{season:02d}.{episode:02d}.{ext}', dry_run=False)
         assert (renamed, total) == (2, 2)
         assert (show / '01.01.mkv').exists()
@@ -316,7 +316,7 @@ class TestProcessDirectoryIntegration:
         extras.mkdir()
         (extras / 'Episode 101 Animatic.mkv').write_bytes(b'x')
         from namer.core import process_directory
-        renamed, total = process_directory(str(show), dry_run=True)
+        renamed, total, errors = process_directory(str(show), dry_run=True)
         assert (renamed, total) == (0, 1)
         _, err = capsys.readouterr()
         assert '\u26a0' not in err                       # no ⚠ warning lines
@@ -324,7 +324,7 @@ class TestProcessDirectoryIntegration:
 
     def test_empty_directory(self, tmp_path, capsys):
         from namer.core import process_directory
-        renamed, total = process_directory(str(tmp_path))
+        renamed, total, errors = process_directory(str(tmp_path))
         assert (renamed, total) == (0, 0)
         assert 'No video files found.' in capsys.readouterr().out
 
@@ -407,3 +407,33 @@ class TestDsrGeometry:
         out = stream.getvalue()
         assert 'file10.mkv' in out
         p.close()
+
+class TestCliExitCode:
+    """B9-005: per-file errors must make the CLI exit non-zero (subprocess)."""
+
+    @staticmethod
+    def _run(directory, *extra):
+        import subprocess, sys
+        return subprocess.run(
+            [sys.executable, '-m', 'namer', '-d', str(directory)] + list(extra),
+            capture_output=True, text=True, timeout=120,
+        )
+
+    def test_malformed_pattern_returns_nonzero(self, tmp_path):
+        """A worker error (invalid custom pattern) → exit code 1 + error count."""
+        movie = tmp_path / 'Movie.2020.mkv'
+        movie.write_bytes(b'x')
+        proc = self._run(tmp_path, '-n', '-p', '{title')
+        assert proc.returncode != 0, f'expected non-zero, got {proc.returncode}'
+        combined = (proc.stdout or '') + (proc.stderr or '')
+        assert 'error' in combined.lower()
+        assert '0/1' in proc.stdout or '0/1' in proc.stderr
+
+    def test_clean_batch_returns_zero(self, tmp_path):
+        """A fully successful batch keeps exit code 0."""
+        show = tmp_path / 'Show'
+        show.mkdir()
+        (show / 'Show.S01E01.mkv').write_bytes(b'x')
+        proc = self._run(show, '-n', '-p', '{season:02d}.{episode:02d}.{ext}')
+        assert proc.returncode == 0, proc.stderr
+

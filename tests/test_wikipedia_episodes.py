@@ -122,21 +122,41 @@ def test_get_entity_qid_cached(fake_wiki, monkeypatch):
 
 # ── Translation (get_translated_title / enrich_title_via_wiki) ────────────────
 
+# Media-type helpers mirroring the resolver's Wikidata P31 sets
+FILM = {'Q11424'}
+SERIES = {'Q5398426'}
+ANIME = {'Q21198342'}
+CONCEPT = {'Q1924249'}
+DISAMBIG = {'Q4167410'}
+
+
+def _types_mock(types_by_qid):
+    return lambda qid, l=None: types_by_qid.get(qid, frozenset())
+
+
+def _year_mock(years_by_qid):
+    return lambda qid, l=None: years_by_qid.get(qid)
+
+
 def test_get_translated_title_skips_first_result_without_langlink(monkeypatch):
-    """Тьма: the first search hit is a generic page (no langlink); the series
+    """Тьма: the first search hit is a generic page (no media type); the series
     page (2nd hit) carries the interlanguage link, so its title wins."""
     monkeypatch.setattr(wiki, '_search_pages',
                         lambda t, l: ['Тьма', 'Тьма (телесериал)'])
     monkeypatch.setattr(wiki, '_get_langlink',
                         lambda page, f, t: 'Dark (TV series)' if 'телесериал' in page else None)
-    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: None)
+    qids = {'Тьма': 'Q204170', 'Тьма (телесериал)': 'Q28443710'}
+    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: qids.get(page))
     monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: None)
-    assert wiki.get_translated_title('Тьма', 'en') == 'Dark (TV series)'
+    monkeypatch.setattr(wiki, '_get_wikidata_types',
+                        _types_mock({'Q204170': CONCEPT, 'Q28443710': SERIES}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q28443710': 2017}))
+    assert wiki.get_translated_title('Тьма', 'en', is_series=True) == 'Dark (TV series)'
 
 
-def test_get_translated_title_label_fallback_skips_lowercase_concept(monkeypatch):
-    """No langlink anywhere: a lowercase concept label ('darkness') is rejected
-    in favour of a later result's real title."""
+def test_get_translated_title_label_fallback_prefers_media_entity(monkeypatch):
+    """No langlink anywhere: the concept page is rejected by its non-media
+    type, the series page's label is used instead."""
     monkeypatch.setattr(wiki, '_search_pages',
                         lambda t, l: ['Тьма', 'Тьма (телесериал)'])
     monkeypatch.setattr(wiki, '_get_langlink', lambda *a: None)
@@ -144,24 +164,87 @@ def test_get_translated_title_label_fallback_skips_lowercase_concept(monkeypatch
     labels = {'Q1': 'darkness', 'Q2': 'Dark'}
     monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: qids.get(page))
     monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: labels.get(qid))
-    assert wiki.get_translated_title('Тьма', 'en') == 'Dark'
+    monkeypatch.setattr(wiki, '_get_wikidata_types',
+                        _types_mock({'Q1': CONCEPT, 'Q2': SERIES}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q2': 2017}))
+    assert wiki.get_translated_title('Тьма', 'en', is_series=True) == 'Dark'
 
 
 def test_get_translated_title_latin_concept_page_not_translated(monkeypatch):
-    """'Dark' → first en.wiki hit 'Darkness' has a lowercase concept label →
+    """'Dark' → first en.wiki hit 'Darkness' is a concept (not a media work) →
     the already-English title is kept unchanged (no 'darkness')."""
     monkeypatch.setattr(wiki, '_search_page', lambda t, l: 'Darkness')
     monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: 'Q204170')
     monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: 'darkness')
+    monkeypatch.setattr(wiki, '_get_wikidata_types', _types_mock({'Q204170': CONCEPT}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({}))
     assert wiki.get_translated_title('Dark', 'en') == 'Dark'
 
 
 def test_get_translated_title_latin_redirect_translated(monkeypatch):
-    """'Yuru Camp' → en.wiki resolves to 'Laid-Back Camp' (title-case) → translated."""
+    """'Yuru Camp' → en.wiki resolves to 'Laid-Back Camp' (anime type) → translated."""
     monkeypatch.setattr(wiki, '_search_page', lambda t, l: 'Laid-Back Camp')
-    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: 'Q28278726')
+    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: 'Q28691353')
     monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: 'Laid-Back Camp')
+    monkeypatch.setattr(wiki, '_get_wikidata_types', _types_mock({'Q28691353': ANIME}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q28691353': 2015}))
     assert wiki.get_translated_title('Yuru Camp', 'en') == 'Laid-Back Camp'
+
+
+def test_get_translated_title_disambiguation_not_resolved_without_year_match(monkeypatch):
+    """B9-001: 'Она' → the only media hit is a 2006 film while the file is from
+    2013 → no translation (the original title is kept, like parent commit did)."""
+    monkeypatch.setattr(wiki, '_search_pages',
+                        lambda t, l: ['Она', 'Она — мужчина'])
+    monkeypatch.setattr(wiki, '_get_langlink',
+                        lambda page, f, t: "She's the Man" if 'мужчина' in page else None)
+    monkeypatch.setattr(wiki, '_get_wikidata_id',
+                        lambda page, l: {'Она': 'Q20433871',
+                                         'Она — мужчина': 'Q72925'}.get(page))
+    monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: None)
+    monkeypatch.setattr(wiki, '_get_wikidata_types',
+                        _types_mock({'Q20433871': DISAMBIG, 'Q72925': FILM}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q72925': 2006}))
+    assert wiki.get_translated_title('Она', 'en', year=2013) == 'Она'
+
+
+def test_get_translated_title_disambiguation_resolved_when_year_and_type_match(monkeypatch):
+    """B9-001: with the file year matching the film, the homonym is resolved."""
+    monkeypatch.setattr(wiki, '_search_pages',
+                        lambda t, l: ['Она', 'Она — мужчина'])
+    monkeypatch.setattr(wiki, '_get_langlink',
+                        lambda page, f, t: "She's the Man" if 'мужчина' in page else None)
+    monkeypatch.setattr(wiki, '_get_wikidata_id',
+                        lambda page, l: {'Она': 'Q20433871',
+                                         'Она — мужчина': 'Q72925'}.get(page))
+    monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: None)
+    monkeypatch.setattr(wiki, '_get_wikidata_types',
+                        _types_mock({'Q20433871': DISAMBIG, 'Q72925': FILM}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q72925': 2006}))
+    assert wiki.get_translated_title('Она', 'en', year=2006) == "She's the Man"
+
+
+def test_get_translated_title_lowercase_media_label_accepted(monkeypatch):
+    """B9-002: a lowercase localized label of a media work is valid —
+    'Mother!' → it must yield 'madre!', not the untranslated 'Mother!'."""
+    monkeypatch.setattr(wiki, '_search_page', lambda t, l: 'Mother!')
+    monkeypatch.setattr(wiki, '_get_langlink', lambda *a: None)
+    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: 'Q25339558')
+    monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: 'madre!')
+    monkeypatch.setattr(wiki, '_get_wikidata_types', _types_mock({'Q25339558': FILM}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q25339558': 2017}))
+    assert wiki.get_translated_title('Mother!', 'it') == 'madre!'
+
+
+def test_get_translated_title_lowercase_media_label_accepted_ru_path(monkeypatch):
+    """B9-002 (ru path): label fallback keeps lowercase media labels too."""
+    monkeypatch.setattr(wiki, '_search_pages', lambda t, l: ['Мама!'])
+    monkeypatch.setattr(wiki, '_get_langlink', lambda *a: None)
+    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: 'Q25339558')
+    monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: 'madre!')
+    monkeypatch.setattr(wiki, '_get_wikidata_types', _types_mock({'Q25339558': FILM}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q25339558': 2017}))
+    assert wiki.get_translated_title('Мама!', 'it') == 'madre!'
 
 
 def test_get_translated_title_source_equals_target(monkeypatch):
@@ -179,9 +262,13 @@ def test_enrich_title_via_wiki_cleans_tv_series_suffix(monkeypatch):
                         lambda t, l: ['Тьма', 'Тьма (телесериал)'])
     monkeypatch.setattr(wiki, '_get_langlink',
                         lambda page, f, t: 'Dark (TV series)' if 'телесериал' in page else None)
-    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: None)
+    qids = {'Тьма': 'Q204170', 'Тьма (телесериал)': 'Q28443710'}
+    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: qids.get(page))
     monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: None)
-    meta = {'title': 'Тьма'}
+    monkeypatch.setattr(wiki, '_get_wikidata_types',
+                        _types_mock({'Q204170': CONCEPT, 'Q28443710': SERIES}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q28443710': 2017}))
+    meta = {'title': 'Тьма', 'is_series': True}
     assert wiki.enrich_title_via_wiki(meta, 'en') is True
     assert meta['title'] == 'Dark'
 
@@ -196,9 +283,27 @@ def test_get_translated_title_ignores_stale_unversioned_cache(tmp_path, monkeypa
                         lambda t, l: ['Тьма', 'Тьма (телесериал)'])
     monkeypatch.setattr(wiki, '_get_langlink',
                         lambda page, f, t: 'Dark (TV series)' if 'телесериал' in page else None)
-    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: None)
+    qids = {'Тьма': 'Q204170', 'Тьма (телесериал)': 'Q28443710'}
+    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: qids.get(page))
     monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: None)
-    assert wiki.get_translated_title('Тьма', 'en') == 'Dark (TV series)'
+    monkeypatch.setattr(wiki, '_get_wikidata_types',
+                        _types_mock({'Q204170': CONCEPT, 'Q28443710': SERIES}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q28443710': 2017}))
+    assert wiki.get_translated_title('Тьма', 'en', is_series=True) == 'Dark (TV series)'
+
+
+def test_episode_title_unwraps_lang_template(fake_wiki):
+    """B9-003: {{lang|la|Sic Mundus Creatus Est}} is unwrapped to its content
+    instead of being emitted as raw template text."""
+    fake_wiki('List of Dark episodes', """{{Infobox television season}}
+== Episodes ==
+{{Episode list/sublist
+| EpisodeNumber = 1
+| Title = {{lang|la|Sic Mundus Creatus Est}}
+}}
+""")
+    result = wiki.fetch_episode_titles('Dark')
+    assert result[(1, 1)] == 'Sic Mundus Creatus Est'
 
 
 def test_inline_multi_season_headings(fake_wiki):

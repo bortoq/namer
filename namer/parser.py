@@ -14,6 +14,18 @@ _SERIES_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Multi-episode file: S01E01E02 / S01E01E02E03 (a single file holding several
+# episodes).  A rename target can only express one episode, so such files must
+# be skipped rather than silently renamed to the first episode number.
+_MULTI_EPISODE_PATTERN = re.compile(
+    r'''(?:
+        (?:^|[.\s-])S\d{1,2}(?:E\d{1,3}){2,}        # S01E01E02
+        | (?:^|[.\s-])S\d{1,2}E\d{1,3}-E\d{1,3}     # S01E01-E03
+        | (?:^|[.\s-])\d{1,2}x\d{1,3}-\d{1,2}x\d{1,3}  # 1x01-1x02
+    )''',
+    re.IGNORECASE | re.VERBOSE,
+)
+
 # Fallback: standalone episode number like " - 01" (common anime format)
 #   Matches 2-3 digit number before quality bracket, end of name, or extension.
 #   Excluded: numbers >=1900 (years) and common resolution widths (480/576/720).
@@ -435,6 +447,7 @@ def parse_file(file_path: str) -> dict:
     dot_title = re.sub(r'\s+', '.', title.strip())
 
     is_series = season is not None
+    is_multi_episode = bool(_MULTI_EPISODE_PATTERN.search(basename))
 
     # Dot-quality: quality label with dots instead of spaces (torrent-style)
     dot_quality = re.sub(r'\s+', '.', quality_label.strip())
@@ -463,4 +476,5 @@ def parse_file(file_path: str) -> dict:
         'group': '',
         'ep_title': '',
         'is_series': is_series,
+        'is_multi_episode': is_multi_episode,
     }

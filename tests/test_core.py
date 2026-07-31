@@ -519,6 +519,154 @@ class TestSanitizeFilename:
         assert name == 'Вопрос\u2236 кто\uff1f.mkv', name
 
 
+class TestRenameNoClobber:
+    """B9-004: rename_file must never overwrite an existing destination,
+    even when the destination appears between the conflict check and rename."""
+
+    def test_rename_no_clobber_plain(self, tmp_path):
+        from namer.core import rename_file
+        src = tmp_path / 'Movie.mkv'
+        src.write_bytes(b'SOURCE')
+        dest = tmp_path / 'New.mkv'
+        assert rename_file(str(src), 'New.mkv') is True
+        assert dest.read_bytes() == b'SOURCE'
+        assert not src.exists()
+
+    def test_rename_no_clobber_existing_dest_uses_counter(self, tmp_path):
+        from namer.core import rename_file
+        src = tmp_path / 'Movie.mkv'
+        src.write_bytes(b'SOURCE')
+        (tmp_path / 'New.mkv').write_bytes(b'OTHER')
+        assert rename_file(str(src), 'New.mkv') is True
+        assert (tmp_path / 'New_1.mkv').read_bytes() == b'SOURCE'
+        assert (tmp_path / 'New.mkv').read_bytes() == b'OTHER'  # untouched
+        assert not src.exists()
+
+    def test_rename_no_clobber_dest_appears_between_check_and_rename(self, tmp_path, monkeypatch):
+        """Simulate the TOCTOU window: after the conflict check picks 'New.mkv'
+        as free, a file materialises there; the rename must fall back to the
+        next free name instead of overwriting it."""
+        from namer import core
+        src = tmp_path / 'Movie.mkv'
+        src.write_bytes(b'SOURCE')
+
+        real_link = core.os.link
+
+        def racing_link(s, d):
+            if core.os.path.basename(d) == 'New.mkv':
+                # Destination materialised between the exists() check and rename
+                with open(d, 'wb') as f:
+                    f.write(b'OTHER')
+            return real_link(s, d)
+
+        monkeypatch.setattr(core.os, 'link', racing_link)
+        assert core.rename_file(str(src), 'New.mkv') is True
+        monkeypatch.undo()
+        assert (tmp_path / 'New.mkv').read_bytes() == b'OTHER'
+        assert (tmp_path / 'New_1.mkv').read_bytes() == b'SOURCE'
+        assert not src.exists()
+
+    def test_rename_no_clobber_hardlink_fallback_when_link_unsupported(self, tmp_path, monkeypatch):
+        """Filesystems without hard links fall back to a re-checked os.rename."""
+        from namer import core
+        src = tmp_path / 'Movie.mkv'
+        src.write_bytes(b'SOURCE')
+        real_link = core.os.link
+
+        def no_link(*a):
+            raise OSError(1, 'Operation not permitted')
+
+        monkeypatch.setattr(core.os, 'link', no_link)
+        assert core.rename_file(str(src), 'New.mkv') is True
+        monkeypatch.undo()
+        assert (tmp_path / 'New.mkv').read_bytes() == b'SOURCE'
+        assert not src.exists()
+
+
+class TestMultiEpisode:
+    """B9-006: S01E01E02 must be skipped safely, not renamed to S01E01."""
+
+    def _disable_online(self, monkeypatch):
+        from namer.providers import Feed
+        monkeypatch.setattr('namer.providers.wikipedia_feed',
+                            lambda meta, lang: Feed('wikipedia', {}))
+        monkeypatch.setattr('namer.providers.tvmaze_feed',
+                            lambda meta, lang: Feed('tvmaze', {}))
+        monkeypatch.setattr('namer.wikipedia.enrich_title_via_wiki',
+                            lambda meta, lang: False)
+
+    def test_parse_marks_multi_episode(self):
+        from namer.parser import parse_file
+        assert parse_file('Show.S01E01E02.mkv')['is_multi_episode'] is True
+        assert parse_file('Show.S01E01.mkv')['is_multi_episode'] is False
+        assert parse_file('Show.S01E01-E02.mkv')['is_multi_episode'] is True
+
+    def test_generate_new_name_skips_multi_episode(self, monkeypatch):
+        self._disable_online(monkeypatch)
+        from namer.core import generate_new_name
+        name, meta = generate_new_name(
+            'Show.S01E01E02.mkv', pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
+        assert name == 'Show.S01E01E02.mkv', f"expected skip, got {name!r}"
+        assert meta['_skip'] is True
+
+    def test_process_directory_skips_multi_episode(self, monkeypatch, tmp_path):
+        self._disable_online(monkeypatch)
+        from namer.core import process_directory
+        show = tmp_path / 'Show'
+        show.mkdir()
+        (show / 'Show.S01E01E02.mkv').write_bytes(b'x')
+        renamed, total, errors = process_directory(
+            str(show), pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
+        assert renamed == 0
+        assert total == 1
+        assert errors == 0
+        assert (show / 'Show.S01E01E02.mkv').exists()  # untouched
+
+
+class TestProcessDirectoryErrorExit:
+    """B9-005: per-file errors must be counted and surfaced to the CLI."""
+
+    def test_worker_error_counts_error(self, monkeypatch, tmp_path):
+        from namer.core import process_directory
+        from namer import core as core_module
+        show = tmp_path / 'Show'
+        show.mkdir()
+        (show / 'Movie.2020.mkv').write_bytes(b'x')
+
+        def boom(*a, **k):
+            raise RuntimeError('boom')
+
+        monkeypatch.setattr(core_module, 'generate_new_name', boom)
+        renamed, total, errors = process_directory(str(show), dry_run=True)
+        assert renamed == 0
+        assert total == 1
+        assert errors == 1
+
+    def test_rename_failure_counts_error(self, monkeypatch, tmp_path):
+        from namer.core import process_directory
+        from namer import core as core_module
+        from namer.providers import Feed
+        monkeypatch.setattr('namer.providers.wikipedia_feed',
+                            lambda meta, lang: Feed('wikipedia', {}))
+        monkeypatch.setattr('namer.providers.tvmaze_feed',
+                            lambda meta, lang: Feed('tvmaze', {}))
+        monkeypatch.setattr('namer.wikipedia.enrich_title_via_wiki',
+                            lambda meta, lang: False)
+        show = tmp_path / 'Show'
+        show.mkdir()
+        (show / 'Show.S01E01.mkv').write_bytes(b'x')
+
+        def fail_rename(*a, **k):
+            return False
+
+        monkeypatch.setattr(core_module, 'rename_file', fail_rename)
+        renamed, total, errors = process_directory(
+            str(show), pattern='{season:02d}.{episode:02d}.{ext}')
+        assert renamed == 0
+        assert total == 1
+        assert errors == 1
+
+
 class TestInvalidCharsSetting:
     def test_every_replacement_key_is_invalid(self):
         from namer import settings

@@ -126,7 +126,7 @@ def main(argv: list = None) -> int:
         return 1
 
     try:
-        renamed, total = process_directory(
+        renamed, total, errors = process_directory(
             directory=directory,
             known_title=known,
             pattern=args.pattern,
@@ -147,6 +147,13 @@ def main(argv: list = None) -> int:
     else:
         if renamed:
             print(f'\nRenamed {renamed}/{total} files.')
+
+    # Per-file errors must not look like a successful batch: report them and
+    # exit non-zero so CI/cron/shell pipelines can react (B9-005).
+    if errors:
+        print(f'\n{errors} error{"s" if errors != 1 else ""} — see rows marked error above.',
+              file=sys.stderr)
+        return 1
 
     return 0
 

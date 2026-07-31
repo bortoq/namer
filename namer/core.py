@@ -131,6 +131,13 @@ def generate_new_name(
     meta['_language_explicit'] = language_explicit
     meta['_title_enriched'] = False
 
+    # ── Multi-episode file (S01E01E02): cannot be represented by a single
+    # rename target — skip safely instead of renaming to the first episode.
+    if meta.get('is_multi_episode'):
+        meta['_skip'] = True
+        meta['_skip_reason'] = 'multi-episode file (SxxExxExx) — not renamed'
+        return os.path.basename(file_path), meta
+
     # ── Supplementary content check ────────────────────────────────────
     if not meta.get('_skip'):
         from namer.extras import is_supplementary, describe_supplementary
@@ -278,6 +285,52 @@ def generate_new_name(
     return new_name, meta
 
 
+def _rename_no_clobber(src: str, dest: str) -> bool:
+    """Atomically move *src* to *dest* without ever overwriting an existing file.
+
+    Uses the hard-link + unlink technique: ``os.link`` fails atomically with
+    FileExistsError if *dest* already exists, closing the TOCTOU window between
+    the caller's ``os.path.exists`` check and the rename.  On filesystems
+    without hard links (FAT, some network mounts) falls back to a re-checked
+    ``os.rename``.
+
+    Returns True on success; False when *dest* exists (nothing was moved).
+    """
+    try:
+        os.link(src, dest)
+    except FileExistsError:
+        return False
+    except OSError:
+        # Hard links unsupported here — re-check and fall back to rename.
+        if os.path.exists(dest):
+            return False
+        os.rename(src, dest)
+        return True
+    # Hard link created: drop the source name.  If the unlink fails, remove
+    # the new hard link too so no duplicate is left behind.
+    try:
+        os.unlink(src)
+    except OSError:
+        try:
+            os.unlink(dest)
+        except OSError:
+            pass
+        raise
+    return True
+
+
+def _next_free_name(directory: str, safe_name: str, reserved: Optional[set]) -> str:
+    """Return the next 'base_N.ext' basename not present on disk / not reserved."""
+    base, ext = os.path.splitext(safe_name)
+    counter = 1
+    while True:
+        candidate = f'{base}_{counter}{ext}'
+        if not os.path.exists(os.path.join(directory, candidate)) and (
+                reserved is None or candidate not in reserved):
+            return candidate
+        counter += 1
+
+
 def rename_file(
     file_path: str,
     new_name: str,
@@ -310,16 +363,8 @@ def rename_file(
     # Step 2: resolve conflicts (checks both filesystem and reserved set)
     dest_basename = safe_name
     if os.path.exists(dest) or (reserved is not None and dest_basename in reserved):
-        base, ext = os.path.splitext(safe_name)
-        counter = 1
-        while True:
-            candidate = f'{base}_{counter}{ext}'
-            candidate_path = os.path.join(directory, candidate)
-            if not os.path.exists(candidate_path) and (reserved is None or candidate not in reserved):
-                dest_basename = candidate
-                dest = candidate_path
-                break
-            counter += 1
+        dest_basename = _next_free_name(directory, safe_name, reserved)
+        dest = os.path.join(directory, dest_basename)
 
     if reserved is not None:
         reserved.add(dest_basename)
@@ -337,7 +382,13 @@ def rename_file(
         return False
 
     try:
-        os.rename(file_path, dest)
+        # Atomic no-clobber move: if the destination appeared between the
+        # conflict check above and this call, claim the next free name and retry.
+        while not _rename_no_clobber(file_path, dest):
+            dest_basename = _next_free_name(directory, safe_name, reserved)
+            dest = os.path.join(directory, dest_basename)
+            if reserved is not None:
+                reserved.add(dest_basename)
         if not quiet:
             print(f'  ✓ "{os.path.basename(file_path)}" → "{os.path.basename(dest)}"')
         if resolved is not None:
@@ -363,7 +414,7 @@ def process_directory(
     verbose: bool = False,
     language: str = 'en',
     language_explicit: bool = False,
-) -> Tuple[int, int]:
+) -> Tuple[int, int, int]:
     """Scan *directory* and rename all video files.
 
     Files are analysed in parallel (settings.MAX_CONCURRENT_FILES workers)
@@ -377,7 +428,9 @@ def process_directory(
 
     Validates metadata first: if season or title could not be determined,
     prints a recommendation and exits early.
-    Returns (renamed_count, total_count).
+    Returns (renamed_count, total_count, error_count).  *error_count* counts
+    files whose processing failed (worker exception or failed rename), so the
+    CLI can exit non-zero instead of reporting a successful batch.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -386,12 +439,12 @@ def process_directory(
 
     if not os.path.isdir(directory):
         print(f'error: directory not found: {directory}', file=sys.stderr)
-        return 0, 0
+        return 0, 0, 0
 
     files = find_video_files(directory, recursive=recursive)
     if not files:
         print('No video files found.')
-        return 0, 0
+        return 0, 0, 0
 
     total = len(files)
     if total > 1:
@@ -443,13 +496,14 @@ def process_directory(
             fut.cancel()
         pool.shutdown(wait=False, cancel_futures=True)
         progress.close()
-        return 0, total
+        return 0, total, 0
     except Exception:
         progress.close()
         raise
 
     # ── Pass 2 (sequential): renames; each file's row shows its status ──
     renamed = 0
+    errors = 0
     reserved: set = set()  # claimed destinations, avoids intra-batch clashes
     interrupted = False
 
@@ -461,7 +515,8 @@ def process_directory(
             basename = os.path.basename(fpath)
 
             if handle.state == 'done':  # errored during generation
-                continue  # the row already shows 'error' (in-place update)
+                errors += 1  # the row already shows 'error' (in-place update)
+                continue
 
             if verbose and not live:
                 rel = os.path.relpath(fpath, directory)
@@ -506,6 +561,7 @@ def process_directory(
                     handle.set_new_name(resolved_names[-1])  # show real dest
                 handle.finish('renamed')
             else:
+                errors += 1
                 handle.finish('error')
     except KeyboardInterrupt:
         interrupted = True
@@ -519,4 +575,4 @@ def process_directory(
         print('\nInterrupted during rename pass.', file=sys.stderr)
         print(f'Renamed {renamed}/{total} files before interrupt.')
 
-    return renamed, total
+    return renamed, total, errors

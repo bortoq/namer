@@ -243,9 +243,112 @@ def _get_wikidata_label(qid: str, target_lang: str) -> Optional[str]:
         return None
 
 
+# ── Wikidata entity kinds (P31 "instance of") ───────────────────────────────
+# A translation candidate is only trusted when its Wikidata entity looks like
+# the same media work as the file: it must be an instance of a film / TV
+# series / anime / manga (and, when the file carries a release year, that
+# year must match).  Concept pages (darkness, aurora) and disambiguation
+# pages are rejected, as is any later search hit that cannot be confirmed.
+
+_FILM_TYPES = frozenset({
+    'Q11424',      # film
+    'Q1259759',    # television film
+    'Q2002065',    # animated film
+    'Q210294',     # documentary film
+})
+_SERIES_TYPES = frozenset({
+    'Q5398426',    # television series
+    'Q15416',      # television program
+    'Q2485448',    # miniseries
+    'Q581714',     # television series (alt)
+    'Q21191270',   # television series (alt)
+    'Q1107',       # anime
+    'Q21198342',   # manga series
+})
+_MEDIA_TYPES = _FILM_TYPES | _SERIES_TYPES | frozenset({
+    'Q8261',       # novel
+    'Q7725634',    # literary work
+})
+
+_ENTITY_CACHE_SUFFIX = 'wikipedia_entity.json'
+
+
+def _entity_cache_load() -> Dict:
+    path = _wiki_cache_path(_ENTITY_CACHE_SUFFIX)
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _entity_cache_save(cache: Dict) -> None:
+    try:
+        _atomic_json_write(_wiki_cache_path(_ENTITY_CACHE_SUFFIX), cache)
+    except OSError:
+        pass
+
+
+def _get_wikidata_entity(qid: str) -> Optional[Dict]:
+    """Fetch {types: [P31...], year} for a Wikidata item; disk-cached per QID."""
+    if not qid:
+        return None
+    cache = _entity_cache_load()
+    if qid in cache:
+        return cache[qid]
+    try:
+        url = f'{_WIKIDATA_API}?action=wbgetentities&ids={qid}&props=claims&format=json'
+        req = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return None
+    entity = data.get('entities', {}).get(qid, {})
+    claims = entity.get('claims', {})
+    types = []
+    for cl in claims.get('P31', []):
+        dv = cl.get('mainsnak', {}).get('datavalue', {})
+        val = dv.get('value', {})
+        if isinstance(val, dict) and val.get('id'):
+            types.append(val['id'])
+    year = None
+    for prop in ('P577', 'P580'):
+        for cl in claims.get(prop, []):
+            t = cl.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('time', '')
+            m = re.match(r'[+-](\d{4})', t or '')
+            if m:
+                year = int(m.group(1))
+                break
+        if year:
+            break
+    if not types and year is None:
+        return None  # nothing usable — do not cache
+    record = {'types': sorted(types), 'year': year}
+    cache[qid] = record
+    try:
+        _entity_cache_save(cache)
+    except Exception:
+        pass
+    return record
+
+
+def _get_wikidata_types(qid: str) -> frozenset:
+    rec = _get_wikidata_entity(qid)
+    return frozenset(rec.get('types') or ()) if rec else frozenset()
+
+
+def _get_wikidata_year(qid: str) -> Optional[int]:
+    rec = _get_wikidata_entity(qid)
+    return rec.get('year') if rec else None
+
+
 # ── Public API ────────────────────────────────────────────────────────────────────────
 
-def get_translated_title(foreign_title: str, target_lang: str = 'en', source_lang: str = None) -> str:
+def get_translated_title(foreign_title: str, target_lang: str = 'en',
+                         source_lang: str = None, is_series: Optional[bool] = None,
+                         year: Optional[int] = None) -> str:
     """Find the Wikipedia title for *foreign_title* in *target_lang*.
 
     Args:
@@ -253,10 +356,15 @@ def get_translated_title(foreign_title: str, target_lang: str = 'en', source_lan
         target_lang: Desired language code (e.g. 'en', 'it', 'de'). Default 'en'.
         source_lang: Wikipedia language code of the source (e.g. 'ru').
                      If None, auto-detected from characters.
+        is_series: Whether the file is a TV series (True), a movie (False), or
+            unknown (None).  Used to disambiguate homonym titles.
+        year: Release/premiere year of the file, if known.  Candidates whose
+            Wikidata year does not match are rejected.
 
     Returns:
-        Translated title (e.g. 'The Invisible Guest', 'L'ospite invisibile'),
-        or *foreign_title* as-is if translation is not available.
+        Translated title (e.g. 'The Invisible Guest', 'Contrattempo (film)'),
+        or *foreign_title* as-is if translation is not available or the
+        matching entity cannot be confirmed.
     """
     if not foreign_title:
         return foreign_title
@@ -269,26 +377,25 @@ def get_translated_title(foreign_title: str, target_lang: str = 'en', source_lan
     # English Wikipedia may still find the page (e.g. anime romaji titles).
     # Search resolves redirects, so the first hit for a romaji/foreign title
     # is usually the English-named article ('Yuru Camp' -> 'Laid-Back Camp').
-    # Concept pages have all-lowercase labels ('Dark' -> 'Darkness' ->
-    # 'darkness') and must not be treated as a title translation.
+    # Only the first hit is considered, and only when its Wikidata entity is
+    # a media work matching the file context ('Dark' -> the concept page
+    # 'Darkness' is rejected).
     if not source_lang:
         page_title = _search_page(foreign_title, 'en')
         if page_title:
-            qid = _get_wikidata_id(page_title, 'en')
-            if qid:
-                translated = _get_wikidata_label(qid, target_lang)
-                if (translated and translated != foreign_title
-                        and not translated.islower()):
-                    return translated
+            translated = _translated_for_candidate(
+                page_title, 'en', target_lang, is_series, year, first_result=True)
+            if translated and translated != foreign_title:
+                return translated
         return foreign_title
 
     # If source == target, nothing to do
     if source_lang == target_lang:
         return foreign_title
 
-    # Check cache (v2: ignores entries produced by older, buggier resolution)
+    # Check cache (v3: ignores entries produced by older, buggier resolution)
     cache = _load_cache()
-    cache_key = f'v2:{foreign_title.strip().lower()}:{source_lang}:{target_lang}'
+    cache_key = f'v3:{foreign_title.strip().lower()}:{source_lang}:{target_lang}'
     cached = cache.get(cache_key)
     if cached:
         return cached
@@ -300,25 +407,13 @@ def get_translated_title(foreign_title: str, target_lang: str = 'en', source_lan
     if not page_titles:
         return foreign_title
 
-    # Prefer a page that has an interlanguage link to the target language:
-    # a langlink proves the entity exists there, so it is a reliable
-    # translation.  The Wikidata-label fallback below is only used when no
-    # result has a langlink at all.
     translated = None
-    for page_title in page_titles:
-        candidate = _get_langlink(page_title, source_lang, target_lang)
-        if candidate:
-            translated = candidate
+    for i, page_title in enumerate(page_titles):
+        translated = _translated_for_candidate(
+            page_title, source_lang, target_lang, is_series, year,
+            first_result=(i == 0))
+        if translated:
             break
-    if not translated:
-        for page_title in page_titles:
-            qid = _get_wikidata_id(page_title, source_lang)
-            if qid:
-                candidate = _get_wikidata_label(qid, target_lang)
-                if candidate and (target_lang != 'en' or not candidate.islower()):
-                    translated = candidate
-                    break
-
     if not translated:
         return foreign_title
 
@@ -328,11 +423,46 @@ def get_translated_title(foreign_title: str, target_lang: str = 'en', source_lan
     return translated
 
 
+def _translated_for_candidate(page_title: str, from_lang: str, to_lang: str,
+                              is_series: Optional[bool], year: Optional[int],
+                              first_result: bool) -> Optional[str]:
+    """Target-language title of *page_title* if it plausibly matches the file.
+
+    Requires the Wikidata entity to be a media work whose type matches
+    *is_series* and whose year matches *year* (when either is known).
+    A non-first search hit is only trusted with a year or an explicit
+    series context — otherwise the ambiguity is left unresolved and the
+    original title is kept.
+    """
+    qid = _get_wikidata_id(page_title, from_lang)
+    if not qid:
+        return None
+    types = _get_wikidata_types(qid)
+    if not (types & _MEDIA_TYPES):
+        return None
+    if is_series is not None:
+        wanted = _SERIES_TYPES if is_series else _FILM_TYPES
+        if not (types & wanted):
+            return None
+    if year is not None:
+        entity_year = _get_wikidata_year(qid)
+        if entity_year is None or abs(entity_year - year) > 1:
+            return None
+    elif not first_result and is_series is not True:
+        return None
+    translated = _get_langlink(page_title, from_lang, to_lang)
+    if not translated:
+        translated = _get_wikidata_label(qid, to_lang)
+    return translated or None
+
+
 def enrich_title_via_wiki(meta: Dict, target_lang: str = 'en') -> bool:
     """Enrich *meta['title']* with the Wikipedia title in *target_lang* (if different).
 
     Works for both movies and TV series/anime.
     Source language is auto-detected from the title characters.
+    The file context (is_series, year) is passed to the resolver so homonym
+    titles are disambiguated against the Wikidata entity.
 
     Args:
         meta: Metadata dict.
@@ -345,7 +475,12 @@ def enrich_title_via_wiki(meta: Dict, target_lang: str = 'en') -> bool:
     if not title:
         return False
 
-    translated = get_translated_title(title, target_lang=target_lang)
+    translated = get_translated_title(
+        title,
+        target_lang=target_lang,
+        is_series=meta.get('is_series'),
+        year=meta.get('year') or None,
+    )
     if translated and translated != title:
         # Clean up Wikipedia disambiguation suffixes: "(film)", "(film, 2016)", etc.
         clean = re.sub(
@@ -415,7 +550,17 @@ def _clean_wiki_title(raw: str) -> str:
     s = re.sub(r'<ref[^>]*>.*?</ref>', '', s, flags=re.DOTALL)
     # [[link|display]] → display ; [[link]] → link
     s = re.sub(r'\[\[(?:[^|\]]*\|)?([^\]]*)\]\]', r'\1', s)
-    s = re.sub(r'\{\{[^{}]*\}\}', '', s)  # templates
+    # Unwrap title-bearing templates BEFORE the generic template strip, so the
+    # actual title survives: {{lang|xx|Text}} -> Text, {{lang-xx|Text}} -> Text,
+    # {{nowrap|Text}} -> Text, {{nihongo|English|...}} -> English.
+    s = re.sub(
+        r'\{\{\s*lang(?:-[a-z]{2,3})?\s*\|\s*[a-z]{2,3}\s*\|\s*([^|{}]+?)\s*\}\}',
+        r'\1', s, flags=re.IGNORECASE)
+    s = re.sub(r'\{\{\s*nowrap\s*\|\s*([^|{}]+?)\s*\}\}', r'\1', s,
+               flags=re.IGNORECASE)
+    s = re.sub(r'\{\{\s*nihongo\s*\|\s*([^|{}]+?)\s*\|.*?\}\}', r'\1', s,
+               flags=re.IGNORECASE | re.DOTALL)
+    s = re.sub(r'\{\{[^{}]*\}\}', '', s)  # remaining templates
     s = re.sub(r"''+", '', s)  # italics/bold quotes
     s = re.sub(r'&nbsp;', ' ', s)
     s = s.replace('\u200b', '')
