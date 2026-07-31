@@ -52,7 +52,7 @@ INVALID_CHARS = frozenset('\\/:*?"<>|') | frozenset(chr(c) for c in range(0x20))
 #
 #   forbidden  →  replacement                  example
 #   ?          →  ？ fullwidth question mark    Lost S02E21 - ？.mp4
-#   *          →  ✱ heavy asterisk              Сборник ✱✱✱.mp3
+#   *          →  × heavy asterisk              Сборник ×××.mp3
 #   :          →  ∶ ratio sign                  Лекция 1∶ Введение.mkv
 #   /          →  ∕ division slash              Проект 2026∕07.docx
 #   \          →  ∖ set minus                   Папка ∖ Архив.zip
@@ -61,7 +61,7 @@ INVALID_CHARS = frozenset('\\/:*?"<>|') | frozenset(chr(c) for c in range(0x20))
 #   >          →  › single right angle
 INVALID_CHAR_REPLACEMENTS = {
     '?': '？',
-    '*': '✱',
+    '*': '×',
     ':': '∶',
     '/': '∕',
     '\\': '∖',

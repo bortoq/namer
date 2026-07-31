@@ -346,6 +346,58 @@ class TestVotingPipeline:
         assert meta['season'] == 0
         assert '00.01.' in name, f"name={name!r}"
 
+
+    def test_season_number_forces_series(self, monkeypatch):
+        """-sn on a movie-looking filename → treated as a series."""
+        self._disable_online(monkeypatch)
+        name, meta = generate_new_name(
+            "The.Matrix.1999.mkv",
+            season_number=2,
+            pattern="{title} S{season:02d}.{ext}",
+        )
+        assert meta['is_series'] is True, f"is_series={meta['is_series']}"
+        assert meta['season'] == 2
+        assert name == "The Matrix S02.mkv", f"name={name!r}"
+
+    def test_season_number_keeps_series_template_default(self, monkeypatch):
+        """-sn switches the default template to the series one."""
+        self._disable_online(monkeypatch)
+        name, meta = generate_new_name(
+            "Show.S01E01.mkv", season_number=2,
+        )
+        assert meta['is_series'] is True
+        assert meta['season'] == 2
+        # The default series template demands {ep_title}; offline it is
+        # missing, so the file is refused - a movie template would have
+        # renamed it to "Show.mkv" instead.
+        assert name == "Show.S01E01.mkv", f"name={name!r}"
+
+    def test_single_digit_dot_episode_is_series(self, monkeypatch, tmp_path):
+        """1.1.mkv inside a show folder → proper series metadata,
+        no garbage "1 1" title reaching the online providers."""
+        self._disable_online(monkeypatch)
+        show = tmp_path / 'Utopia'
+        show.mkdir()
+        fpath = show / '1.1.mkv'
+        fpath.write_bytes(b'dummy')
+        name, meta = generate_new_name(
+            str(fpath), pattern='{season:02d}.{episode:02d}.{ext}')
+        assert meta['is_series'] is True
+        assert meta['season'] == 1
+        assert meta['episode'] == 1
+        # The show name comes from the directory (pytest's temp dirs may
+        # also be collected, so just require the real show name).
+        assert 'Utopia' in meta['title'], f"title={meta['title']!r}"
+        assert name == '01.01.mkv', f"name={name!r}"
+
+    def test_audio_51_movie_not_series(self, monkeypatch):
+        """A movie with 5.1 audio must stay a movie (no S/E false positive)."""
+        self._disable_online(monkeypatch)
+        name, meta = generate_new_name(
+            "Movie.2020.1080p.DTS.5.1.mkv", pattern='{title} ({year}).{ext}')
+        assert meta['is_series'] is False
+        assert name == 'Movie (2020).mkv', f"name={name!r}"
+
     def test_assumed_anime_season_still_renames(self, monkeypatch):
         """Assumed season 1 (anime format) with no opposition still works."""
         self._disable_online(monkeypatch)
@@ -363,7 +415,7 @@ class TestSanitizeFilename:
     def test_lookalike_replacement_1to1(self):
         from namer.core import _sanitize_filename
         assert _sanitize_filename('?') == '\uff1f'                    # ？
-        assert _sanitize_filename('*') == '\u2731'                    # ✱
+        assert _sanitize_filename('*') == '\u00d7'                    # ×
         assert _sanitize_filename(':') == '\u2236'                    # ∶
         assert _sanitize_filename('/') == '\u2215'                    # ∕
         assert _sanitize_filename('\\') == '\u2216'                   # ∖
@@ -380,7 +432,7 @@ class TestSanitizeFilename:
         cases = {
             'Lost S02E21 - ?.mp4': 'Lost S02E21 - \uff1f.mp4',
             '\u0421\u0431\u043e\u0440\u043d\u0438\u043a ***.mp3':
-                '\u0421\u0431\u043e\u0440\u043d\u0438\u043a \u2731\u2731\u2731.mp3',
+                '\u0421\u0431\u043e\u0440\u043d\u0438\u043a \u00d7\u00d7\u00d7.mp3',
             '\u041b\u0435\u043a\u0446\u0438\u044f 1: \u0412\u0432\u0435\u0434\u0435\u043d\u0438\u0435.mkv':
                 '\u041b\u0435\u043a\u0446\u0438\u044f 1\u2236 \u0412\u0432\u0435\u0434\u0435\u043d\u0438\u0435.mkv',
             '\u041f\u0440\u043e\u0435\u043a\u0442 2026/07.docx':
