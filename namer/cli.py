@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         '-sn', '--season-number', type=int, default=0,
-        help='Explicit season number (overrides auto-detection)',
+        help='Explicit season number (overrides auto-detection; marks the file as a series)',
     )
     p.add_argument(
         '-p', '--pattern', default='',

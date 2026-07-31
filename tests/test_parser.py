@@ -184,6 +184,70 @@ class TestTitleFromPath:
         assert meta['ep_title'] == ""  # no longer scraped from filename
 
 
+
+class TestSingleDigitDotEpisode:
+    """N.N names with a single-digit episode (e.g. '1.1.mkv') are series.
+
+    Regression: previously '1.1.mkv' parsed as the movie title "1 1" and
+    online lookups turned it into garbage renames (Wikipedia/TVmaze false
+    matches like '9-1-1', '2 + 2 = 5', 'Formation').
+    """
+
+    def test_parse_single_digit_dot_episode(self):
+        s, e = parse_season_episode("1.1.mkv")
+        assert (s, e) == (1, 1)
+
+    def test_parse_season2_episode6(self):
+        s, e = parse_season_episode("2.6.mkv")
+        assert (s, e) == (2, 6)
+
+    def test_parse_multi_digit_season(self):
+        s, e = parse_season_episode("12.3.mkv")
+        assert (s, e) == (12, 3)
+
+    def test_audio_51_not_episode(self):
+        """'DTS.5.1.' inside a filename must NOT become season=5."""
+        s, e = parse_season_episode("Movie.2020.1080p.DTS.5.1.mkv")
+        assert (s, e) == (None, None)
+
+    def test_audio_51_bare_not_episode(self):
+        s, e = parse_season_episode("DTS.5.1.mkv")
+        assert (s, e) == (None, None)
+
+    def test_movie_year_pair_not_episode(self):
+        """'1917.2019' must stay a movie (NMR-005 regression)."""
+        s, e = parse_season_episode("1917.2019.mkv")
+        assert (s, e) == (None, None)
+
+    def test_odyssey_not_episode(self):
+        s, e = parse_season_episode("2001.A.Space.Odyssey.1968.mkv")
+        assert (s, e) == (None, None)
+
+    def test_parse_file_series(self):
+        meta = parse_file("1.1.mkv")
+        assert meta['is_series'] is True
+        assert meta['season'] == 1
+        assert meta['episode'] == 1
+        assert meta['season_assumed'] is False
+        assert meta['title'] == ""  # show name comes from the directory
+
+    def test_parse_file_season2(self):
+        meta = parse_file("2.1.mkv")
+        assert meta['is_series'] is True
+        assert meta['season'] == 2
+        assert meta['episode'] == 1
+
+    def test_clean_title_strips_dot_episode(self):
+        assert clean_title("1.1.mkv") == ""
+        assert clean_title("2.6.mkv") == ""
+
+    def test_two_digit_episode_unaffected(self):
+        """'1.01.' still parses (and is not touched by the new pattern)."""
+        s, e = parse_season_episode("1.01. Departure.mkv")
+        assert (s, e) == (1, 1)
+        assert parse_file("1.01. Departure.mkv")['season'] == 1
+
+
 class TestBugFixes:
     """Regression tests for reported bugs."""
 

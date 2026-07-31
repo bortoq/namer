@@ -110,6 +110,7 @@ def generate_new_name(
                  (*TEMPLATE_SERIES* or *TEMPLATE_MOVIE*).
         tmdb_key: TMDB API key for episode title / year enrichment.
         season_number: Explicit season number (overrides auto-detection).
+                      A positive value also marks the file as a series.
         language: Two-letter language code (e.g. "en", "ru", "de").
 
     Pipeline: every provider (filename, dirname, file, wikipedia, tvmaze,
@@ -212,6 +213,10 @@ def generate_new_name(
     if season_number > 0:
         meta['season'] = season_number
         meta['season_assumed'] = False
+        # -sn is an explicit series declaration: the user says "season N",
+        # so the file is treated as a series even if the filename alone
+        # looked like a movie.
+        meta['is_series'] = True
         if 'season' in refused:
             refused.remove('season')
         meta['_refused_fields'] = refused

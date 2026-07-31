@@ -33,6 +33,16 @@ _SERIES_X_FORMAT = re.compile(
 )
 
 
+
+# "N.N" with a single-digit episode, anchored at the very start of the name
+# (e.g. "1.1.mkv", "2.6.mkv" - hand-numbered series rips).  The ^ anchor is
+# what keeps audio strings like "DTS.5.1." from matching: they never appear
+# at the start of a filename.
+_SINGLE_DIGIT_DOT_EPISODE = re.compile(
+    r'^(?P<season>\d{1,2})\.(?P<episode>\d)(?:\.|$)',
+)
+
+
 # Episode in brackets: [01] or [01_of_74] (common anime format)
 _EPISODE_IN_BRACKETS = re.compile(
     r'\[(?P<episode>\d{2,3})(?:_of_\d+)?\]',
@@ -135,6 +145,15 @@ def _parse_season_episode_full(file_name: str) -> Tuple[Optional[int], Optional[
         episode = int(m.group('episode'))
         return season, episode, False
 
+    # "N.N." with single-digit episode, anchored at the start
+    # (e.g. "1.1.mkv" - hand-numbered series rips).  Never matches mid-name
+    # quality strings like "DTS.5.1.".
+    m = _SINGLE_DIGIT_DOT_EPISODE.search(file_name)
+    if m:
+        season = int(m.group('season'))
+        episode = int(m.group('episode'))
+        return season, episode, False
+
     # If we had Sxx but no episode was found by any fallback, return (season, None)
     if season_from_series is not None:
         return season_from_series, None, False
@@ -173,6 +192,7 @@ def clean_title(file_name: str) -> str:
     name = _SERIES_PATTERN.sub('', name)
     name = _EPISODE_FALLBACK.sub('', name)
     name = _SEASON_DOT_EPISODE.sub('', name)
+    name = _SINGLE_DIGIT_DOT_EPISODE.sub('', name)
     name = _SERIES_X_FORMAT.sub('', name)
 
     # Remove only the last year (release year), keep earlier years like "2001"
@@ -392,7 +412,9 @@ def parse_file(file_path: str) -> dict:
 
     # When SxxExx is detected, split title/ep_title at the marker boundary
     # This prevents episode name from leaking into the show title
-    marker_match = _SERIES_PATTERN.search(basename) or _SEASON_DOT_EPISODE.search(basename)
+    marker_match = (_SERIES_PATTERN.search(basename)
+                    or _SEASON_DOT_EPISODE.search(basename)
+                    or _SINGLE_DIGIT_DOT_EPISODE.search(basename))
     if marker_match:
         before = basename[:marker_match.start()]
         title = clean_title(before) if before.strip() else ''
