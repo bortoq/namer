@@ -18,7 +18,7 @@ _SERIES_PATTERN = re.compile(
 #   Matches 2-3 digit number before quality bracket, end of name, or extension.
 #   Excluded: numbers >=1900 (years) and common resolution widths (480/576/720).
 _EPISODE_FALLBACK = re.compile(
-    r'(?:^|[.\s-])(?P<episode>\d{2,3})(?:\s*v\d+)?(?=\s*[\[\(]|\s*$|\.\w+$)',
+    r'(?:^|[.\s-])(?P<episode>\d{2,3})(?:\s*v\d+)?(?=\s*[\[\(]|\s*$|\.\w+$|\.\s)',
 )
 
 # "1.01." or "12.01." format (already-formatted season.episode.)
@@ -414,7 +414,8 @@ def parse_file(file_path: str) -> dict:
     # This prevents episode name from leaking into the show title
     marker_match = (_SERIES_PATTERN.search(basename)
                     or _SEASON_DOT_EPISODE.search(basename)
-                    or _SINGLE_DIGIT_DOT_EPISODE.search(basename))
+                    or _SINGLE_DIGIT_DOT_EPISODE.search(basename)
+                    or _EPISODE_FALLBACK.search(basename))
     if marker_match:
         before = basename[:marker_match.start()]
         title = clean_title(before) if before.strip() else ''

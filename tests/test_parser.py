@@ -248,6 +248,57 @@ class TestSingleDigitDotEpisode:
         assert parse_file("1.01. Departure.mkv")['season'] == 1
 
 
+
+class TestEpisodeNumberDotSpace:
+    """'NN. Title.mkv' (episode number, dot, space) is a series.
+
+    Regression: '01. Секреты.mkv' was parsed as a movie titled '01 Секреты'
+    and the garbage title reached the online providers ('Mi secreto',
+    'Petr Vrána', 'Genesis creation narrative' ...).
+    """
+
+    def test_parse_episode_number_dot_space(self):
+        s, e = parse_season_episode("01. Секреты.mkv")
+        assert (s, e) == (1, 1)
+
+    def test_parse_later_episode(self):
+        s, e = parse_season_episode("08. Что посеешь, то и пожнешь.mkv")
+        assert (s, e) == (1, 8)
+
+    def test_parse_file_series(self):
+        meta = parse_file("01. Секреты.mkv")
+        assert meta['is_series'] is True
+        assert meta['season'] == 1
+        assert meta['episode'] == 1
+        assert meta['season_assumed'] is True
+        # no show name in the filename (number is at the start) -> the
+        # directory supplies it; a garbage title must NOT go online
+        assert meta['title'] == ""
+
+    def test_show_name_before_marker_kept(self):
+        """'Show [01].mkv' still derives its title from the filename."""
+        meta = parse_file("Show [01].mkv")
+        assert meta['title'] == "Show"
+        assert meta['is_series'] is True
+
+    def test_space_without_dot_is_movie(self):
+        """'10 Cloverfield Lane' (no dot) stays a movie."""
+        s, e = parse_season_episode("10 Cloverfield Lane.mkv")
+        assert (s, e) == (None, None)
+
+    def test_dot_without_space_is_movie(self):
+        """'10.Cloverfield.Lane.2016' (dot, no space) stays a movie."""
+        s, e = parse_season_episode("10.Cloverfield.Lane.2016.mkv")
+        assert (s, e) == (None, None)
+
+    def test_year_number_ignored(self):
+        s, e = parse_season_episode("2001. A Space Odyssey.mkv")
+        assert (s, e) == (None, None)
+
+    def test_clean_title_keeps_movie(self):
+        assert clean_title("10 Cloverfield Lane.mkv") == "10 Cloverfield Lane"
+
+
 class TestBugFixes:
     """Regression tests for reported bugs."""
 

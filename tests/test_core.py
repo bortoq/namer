@@ -398,6 +398,44 @@ class TestVotingPipeline:
         assert meta['is_series'] is False
         assert name == 'Movie (2020).mkv', f"name={name!r}"
 
+
+    def test_episode_dot_space_series_dir_title(self, monkeypatch, tmp_path):
+        """'01. Секреты.mkv' in a show dir → series with the DIR title
+        (the garbage episode-title must not reach online providers)."""
+        self._disable_online(monkeypatch)
+        show = tmp_path / 'Тьма (Dark)'
+        show.mkdir()
+        fpath = show / '01. Секреты.mkv'
+        fpath.write_bytes(b'dummy')
+        name, meta = generate_new_name(
+            str(fpath), pattern='{season:02d}.{episode:02d}.{ext}')
+        assert meta['is_series'] is True
+        assert meta['season'] == 1
+        assert meta['episode'] == 1
+        assert 'Тьма' in meta['title'], f"title={meta['title']!r}"
+        assert 'Секреты' not in meta['title'], f"title={meta['title']!r}"
+        assert name == '01.01.mkv', f"name={name!r}"
+
+    def test_episode_dot_space_no_title_skips(self, monkeypatch, tmp_path):
+        """'01. Title.mkv' with no usable title anywhere → skipped
+        (never renamed with a garbage online match)."""
+        self._disable_online(monkeypatch)
+        monkeypatch.setattr('namer.parser.title_from_path', lambda p: '')
+        fpath = tmp_path / '01. Секреты.mkv'
+        fpath.write_bytes(b'dummy')
+        name, meta = generate_new_name(str(fpath))
+        assert meta['is_series'] is True
+        assert name == '01. Секреты.mkv', f"name={name!r}"
+
+    def test_movie_space_number_stays_movie(self, monkeypatch):
+        """'10 Cloverfield Lane' (space, no dot) stays a movie."""
+        self._disable_online(monkeypatch)
+        name, meta = generate_new_name(
+            "10 Cloverfield Lane.mkv", pattern='{title} ({year}).{ext}')
+        assert meta['is_series'] is False
+        assert meta['title'] == '10 Cloverfield Lane'
+        assert name == '10 Cloverfield Lane.mkv', f"name={name!r}"
+
     def test_assumed_anime_season_still_renames(self, monkeypatch):
         """Assumed season 1 (anime format) with no opposition still works."""
         self._disable_online(monkeypatch)

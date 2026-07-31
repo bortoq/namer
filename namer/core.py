@@ -265,6 +265,8 @@ def generate_new_name(
         return basename, meta
     # ep_title is required when template uses it — skip if missing
     if _template_uses(template, 'ep_title') and not meta.get('ep_title'):
+        meta['_skip'] = True
+        meta['_skip_reason'] = 'could not determine episode title (use -sn N or --tmdb-key)'
         return basename, meta
 
     if progress is not None:
