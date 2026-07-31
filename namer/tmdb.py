@@ -12,6 +12,7 @@ import json
 import os
 import re
 import time
+import threading
 import urllib.parse
 import urllib.request
 from typing import Dict, Optional
@@ -49,13 +50,16 @@ def _load_episode_cache() -> dict:
 
 
 def _save_episode_cache(cache: dict):
+    """Persist *cache* atomically — safe for concurrent threads."""
     path = os.path.join(CACHE_DIR, 'episodes.json')
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
         now = time.time()
         to_save = {k: {'titles': v, '_cached_at': now} for k, v in cache.items()}
-        with open(path, 'w') as f:
+        tmp = f'{path}.tmp.{os.getpid()}.{threading.get_ident()}'
+        with open(tmp, 'w') as f:
             json.dump(to_save, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
     except OSError:
         pass
 

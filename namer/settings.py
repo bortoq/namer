@@ -31,3 +31,9 @@ VIDEO_EXTENSIONS = {
 
 TEMPLATE_MOVIE = '{title} ({year}) {mod}.{ext}'
 TEMPLATE_SERIES = '{season:02d}.{episode:02d}. {ep_title}.{ext}'
+
+# ── Concurrency ──────────────────────────────────────────────────────────
+# How many files are processed in parallel.  Lookups are I/O-bound
+# (network requests with timeouts), so a handful of workers hides
+# per-request latency; keep it small to stay polite to the APIs.
+MAX_CONCURRENT_FILES = 4

@@ -16,6 +16,7 @@ import html
 import json
 import os
 import re
+import threading
 import urllib.parse
 import urllib.request
 from typing import Dict, List, Optional, Tuple
@@ -117,11 +118,17 @@ def _load_cache() -> Dict:
     return {}
 
 
-def _save_cache(cache: Dict) -> None:
-    path = _cache_path()
+def _atomic_json_write(path: str, cache: Dict) -> None:
+    """Write *cache* to *path* atomically (safe for concurrent threads)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'w') as f:
+    tmp = f'{path}.tmp.{os.getpid()}.{threading.get_ident()}'
+    with open(tmp, 'w') as f:
         json.dump(cache, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _save_cache(cache: Dict) -> None:
+    _atomic_json_write(_cache_path(), cache)
 
 
 # ── API helpers ───────────────────────────────────────────────────────────────
@@ -511,11 +518,8 @@ def _episode_cache_load() -> Dict:
 
 
 def _episode_cache_save(cache: Dict) -> None:
-    path = _wiki_cache_path(_EP_CACHE_PATH_SUFFIX)
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w') as f:
-            json.dump(cache, f, ensure_ascii=False)
+        _atomic_json_write(_wiki_cache_path(_EP_CACHE_PATH_SUFFIX), cache)
     except OSError:
         pass
 
@@ -558,11 +562,8 @@ def _qid_cache_load() -> Dict:
 
 
 def _qid_cache_save(cache: Dict) -> None:
-    path = _wiki_cache_path(_QID_CACHE_PATH_SUFFIX)
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w') as f:
-            json.dump(cache, f, ensure_ascii=False)
+        _atomic_json_write(_wiki_cache_path(_QID_CACHE_PATH_SUFFIX), cache)
     except OSError:
         pass
 

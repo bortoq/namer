@@ -4,7 +4,7 @@ import os
 import re
 import string
 import sys
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from namer import settings
 from namer.parser import parse_file
@@ -73,6 +73,7 @@ def generate_new_name(
     season_number: int = 0,
     language: str = "en",
     language_explicit: bool = False,
+    progress: Optional[object] = None,
 ) -> Tuple[str, dict]:
     """Generate a new filename for *file_path*.
 
@@ -96,6 +97,8 @@ def generate_new_name(
     """
     from namer.voting import vote, update_scores, Scores
 
+    if progress is not None:
+        progress.set_action('parsing feeds')
     meta = parse_file(file_path)
     meta['_skip'] = False
     meta['_language_explicit'] = language_explicit
@@ -136,6 +139,8 @@ def generate_new_name(
     # ── Language validation + Wikipedia title translation ──────────────
     # Runs before the feeds so the corrected title helps online lookups.
     if meta.get("title"):
+        if progress is not None:
+            progress.set_action('querying providers')
         try:
             from namer.wikipedia import enrich_title_via_wiki, is_valid_language, _detect_language
             if not is_valid_language(language):
@@ -161,7 +166,11 @@ def generate_new_name(
     # ── Round 1: local providers vote on season/episode ────────────────
     from namer.providers import local_feeds, online_feeds
     scores: Scores = {}  # per-run success ratings (tie-break for votes)
+    if progress is not None:
+        progress.set_action('parsing feeds')
     local = local_feeds(file_path, known_title)
+    if progress is not None:
+        progress.set_action('voting')
     v1 = vote(local, scores)
 
     refused = [f for f in ('season', 'episode') if f in v1 and not v1[f].usable]
@@ -182,8 +191,12 @@ def generate_new_name(
         meta['_refused_fields'] = refused
 
     # ── Round 2: online providers vote on title/year/ep_title ──────────
+    if progress is not None:
+        progress.set_action('querying providers')
     online = online_feeds(meta, tmdb_key, language) if meta.get('title') else []
     all_feeds = local + online
+    if progress is not None:
+        progress.set_action('voting')
     v = vote(all_feeds, scores)
     update_scores(scores, all_feeds, v)
 
@@ -223,6 +236,8 @@ def generate_new_name(
     if _template_uses(template, 'ep_title') and not meta.get('ep_title'):
         return basename, meta
 
+    if progress is not None:
+        progress.set_action('rendering')
     new_name = _format_template(template, meta)
     if not new_name:
         new_name = os.path.basename(file_path)
@@ -235,6 +250,8 @@ def rename_file(
     new_name: str,
     dry_run: bool = False,
     reserved: set = None,
+    quiet: bool = False,
+    resolved: Optional[List[str]] = None,
 ) -> bool:
     """Rename *file_path* to *new_name* in the same directory.
 
@@ -243,6 +260,9 @@ def rename_file(
 
     If *reserved* set is provided, it tracks destinations claimed within
     a batch to prevent intra-batch collisions in dry-run mode.
+    With *quiet*, the per-file success line is suppressed (the caller
+    prints the history after the progress region closes); the resolved
+    destination basename is then appended to *resolved* if given.
     Returns True on success (or simulated success in dry-run).
     """
     directory = os.path.dirname(file_path) or '.'
@@ -272,7 +292,10 @@ def rename_file(
         reserved.add(dest_basename)
 
     if dry_run:
-        print(f'  mv "{os.path.basename(file_path)}" → "{dest_basename}"')
+        if not quiet:
+            print(f'  mv "{os.path.basename(file_path)}" → "{dest_basename}"')
+        if resolved is not None:
+            resolved.append(dest_basename)
         return True
 
     # Safety: verify source still exists BEFORE rename
@@ -282,7 +305,10 @@ def rename_file(
 
     try:
         os.rename(file_path, dest)
-        print(f'  ✓ "{os.path.basename(file_path)}" → "{os.path.basename(dest)}"')
+        if not quiet:
+            print(f'  ✓ "{os.path.basename(file_path)}" → "{os.path.basename(dest)}"')
+        if resolved is not None:
+            resolved.append(os.path.basename(dest))
         return True
     except OSError as e:
         print(f'  ✗ Rename failed: {e}', file=sys.stderr)
@@ -307,10 +333,20 @@ def process_directory(
 ) -> Tuple[int, int]:
     """Scan *directory* and rename all video files.
 
+    Files are analysed in parallel (settings.MAX_CONCURRENT_FILES workers)
+    because lookups are network-bound; the rename pass itself stays
+    sequential so intra-batch destination conflicts are resolved safely.
+    A live progress region (one line per file) is drawn on stderr when
+    the terminal supports it; the per-file history is printed to stdout
+    after the region closes.
+
     Validates metadata first: if season or title could not be determined,
     prints a recommendation and exits early.
     Returns (renamed_count, total_count).
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from namer.progress import Progress
     from namer.scanner import find_video_files
 
     if not os.path.isdir(directory):
@@ -326,15 +362,21 @@ def process_directory(
     if total > 1:
         print(f'Found {total} video file{"s" if total > 1 else ""}.')
 
-    # ── First pass: collect all results ────────────────────────────────
-    results: List[Tuple[str, str, dict]] = []  # (filepath, new_name, meta)
+    max_workers = getattr(settings, 'MAX_CONCURRENT_FILES', 4) or 1
+    progress = Progress(total=total,
+                        mode='dry-run' if dry_run else 'rename',
+                        max_concurrent=max_workers)
+    live = progress.is_live()
+    results: List[Optional[Tuple[str, str, dict, object]]] = [None] * total
 
-    for fpath in files:
-        rel = os.path.relpath(fpath, directory)
-        if verbose and rel != os.path.basename(fpath):
-            print(f'\n[{rel}]')
-
-        new_name, meta = generate_new_name(
+    # ── Pass 1 (parallel): collect all results ──────────────────────────
+    def work(index: int, fpath: str) -> None:
+        new_name = os.path.basename(fpath)
+        meta = {}
+        handle = None
+        try:
+            handle = progress.task(index + 1, new_name)
+            new_name, meta = generate_new_name(
                 fpath,
                 known_title=known_title,
                 pattern=pattern,
@@ -342,16 +384,60 @@ def process_directory(
                 season_number=season_number,
                 language=language,
                 language_explicit=language_explicit,
+                progress=handle,
             )
-        results.append((fpath, new_name, meta))
+            if new_name and new_name != os.path.basename(fpath):
+                handle.set_new_name(new_name)
+            handle.park()
+        except Exception as exc:  # one bad file must not kill the batch
+            meta = {'_skip': True, '_skip_reason': f'error: {exc}'}
+            if handle is not None:
+                handle.finish('error')
+        results[index] = (fpath, new_name, meta, handle)
 
-    # ── Second pass: perform renames, warn on skips ───────────────────────────
-    renamed = 0
-    reserved: set = set()  # track claimed destinations for intra-batch conflict
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+    futures = []
     try:
-        for fpath, new_name, meta in results:
-            # Check if file would be skipped (incomplete metadata)
+        for i, fpath in enumerate(files):
+            futures.append(pool.submit(work, i, fpath))
+        for fut in as_completed(futures):
+            fut.result()  # workers swallow their own errors; surfaces bugs
+        pool.shutdown()  # all workers done — release threads
+    except KeyboardInterrupt:
+        print('\nInterrupted during processing.', file=sys.stderr)
+        for fut in futures:
+            fut.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
+        progress.close()
+        return 0, total
+    except Exception:
+        progress.close()
+        raise
+
+    # ── Pass 2 (sequential): renames, warn on skips ─────────────────────
+    renamed = 0
+    reserved: set = set()  # claimed destinations, avoids intra-batch clashes
+    history: List[str] = []   # stdout lines, printed after the live region
+    warnings: List[str] = []  # stderr lines, printed after the live region
+
+    try:
+        for result in results:
+            if result is None:
+                continue
+            fpath, new_name, meta, handle = result
             basename = os.path.basename(fpath)
+
+            if verbose and not live:
+                rel = os.path.relpath(fpath, directory)
+                if rel != basename:
+                    history.append(f'\n[{rel}]')
+
+            if handle.state == 'done':  # errored during generation
+                if meta.get('_skip_reason'):
+                    warnings.append(f'  \u26a0 {basename}')
+                    warnings.append(f'    skipped — {meta["_skip_reason"]}')
+                continue
+
             # Determine effective template (same logic as generate_new_name)
             if pattern:
                 if not meta.get('is_series') and (_template_uses(pattern, 'season') or _template_uses(pattern, 'episode')):
@@ -373,20 +459,42 @@ def process_directory(
             # Allow missing ep_title — _format_template handles the gap
 
             if skip_reason:
-                print(f'  ⚠ {basename}', file=sys.stderr)
-                print(f'    skipped — {skip_reason}', file=sys.stderr)
+                warnings.append(f'  \u26a0 {basename}')
+                warnings.append(f'    skipped — {skip_reason}')
+                handle.finish('skipped')
                 continue
 
             if not new_name or new_name == basename:
                 if verbose:
-                    print(f'  = {basename} (unchanged)')
+                    history.append(f'  = {basename} (unchanged)')
+                handle.finish('unchanged')
                 continue
 
-            success = rename_file(fpath, new_name, dry_run, reserved=reserved)
+            handle.unpark('renaming')
+            resolved_names: List[str] = []
+            success = rename_file(fpath, new_name, dry_run, reserved=reserved,
+                                  quiet=True, resolved=resolved_names)
+            dest_basename = resolved_names[-1] if resolved_names else new_name
             if success or dry_run:
                 renamed += 1
+                handle.finish('renamed')
+                marker = 'mv' if dry_run else '\u2713'
+                history.append(f'  {marker} "{basename}" \u2192 "{dest_basename}"')
+            else:
+                handle.finish('error')
     except KeyboardInterrupt:
         print('\nInterrupted during rename pass.', file=sys.stderr)
         print(f'Renamed {renamed}/{total} files before interrupt.')
+    except Exception:
+        progress.close()
+        raise
+
+    progress.close()
+
+    # ── Deferred output (the live region is gone by now) ────────────────
+    for line in history:
+        print(line)
+    for line in warnings:
+        print(line, file=sys.stderr)
 
     return renamed, total

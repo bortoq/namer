@@ -14,6 +14,7 @@ Typical usage::
 import json
 import os
 import re
+import threading
 import string
 import urllib.request
 import urllib.parse
@@ -41,11 +42,13 @@ def _load_cache() -> Dict:
 
 
 def _save_cache(cache: Dict) -> None:
-    """Persist *cache* to disk."""
+    """Persist *cache* to disk (atomic — safe for concurrent threads)."""
     path = _cache_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'w') as f:
+    tmp = f'{path}.tmp.{os.getpid()}.{threading.get_ident()}'
+    with open(tmp, 'w') as f:
         json.dump(cache, f)
+    os.replace(tmp, path)
 
 
 # ── API calls ────────────────────────────────────────────────────────────────
