@@ -524,10 +524,10 @@ class TestModifierInTitle:
         assert meta["mod"] == exp_mod, f"mod={meta['mod']!r}"
 
     def test_gone_girl_uncut_black(self):
-        """Modifier word must not appear in the title; 'Uncut' stays in mod."""
+        """"uncut_black" is uncropped black bars: no title words, no mod."""
         meta = parse_file("Gone Girl (2014).uncut_black.mkv")
-        assert "uncut" not in meta["title"].lower(), f"title={meta['title']!r}"
-        assert meta["mod"] == "Uncut"
+        assert meta["title"] == "Gone Girl", f"title={meta['title']!r}"
+        assert meta["mod"] == "", f"mod={meta['mod']!r}"
 
     def test_clean_title_with_year_present_strips_modifier(self):
         """Year counts as a release marker, so modifiers after it are removed."""
@@ -538,6 +538,22 @@ class TestModifierInTitle:
         """'Uncut' in 'Uncut Gems' and 'Extended' in 'Extended Family' are titles."""
         assert clean_title("Uncut.Gems.2019.mkv") == "Uncut Gems"
         assert clean_title("Extended.Family.S01E01.mkv") == "Extended Family"
+
+    def test_uncut_black_is_video_technical_tag_not_modifier(self):
+        """"uncut_black" = uncropped black bars; not an edition modifier."""
+        for fname in ("Gone Girl (2014).uncut_black.mkv",
+                      "Gone Girl (2014).black_uncut.mkv",
+                      "Gone Girl (2014).uncut.black.mkv"):
+            meta = parse_file(fname)
+            assert meta["title"] == "Gone Girl", f"title={meta['title']!r}"
+            assert meta["mod"] == "", f"mod={meta['mod']!r} for {fname!r}"
+        assert clean_title("Gone Girl (2014).uncut_black.mkv") == "Gone Girl"
+
+    def test_standalone_uncut_is_still_an_edition_modifier(self):
+        """A lone 'uncut' (not followed by black) is a real edition modifier."""
+        meta = parse_file("American Psycho (2000) uncut.mkv")
+        assert meta["title"] == "American Psycho"
+        assert meta["mod"] == "Uncut"
 
 
 class TestTitleCaseNormalization:

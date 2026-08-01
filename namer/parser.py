@@ -4,7 +4,8 @@ import os
 import re
 from typing import Optional, Tuple
 
-from namer.quality import parse_quality, QualityInfo, MODIFIER_NON_FIRST_PATTERN
+from namer.quality import (parse_quality, QualityInfo,
+                              MODIFIER_NON_FIRST_PATTERN, BLACK_BARS_TAG)
 
 # ── Patterns (adapted from sator/normalizer.py and sator/title.py) ───────
 
@@ -350,6 +351,11 @@ def clean_title(file_name: str) -> str:
 
     # Remove source tokens
     name = _SOURCE_TOKENS.sub('', name)
+
+    # "uncut_black" — the video keeps its (uncropped) black bars; a
+    # video-technical tag, not an edition modifier.  Strip the whole
+    # compound so neither word reaches the title.
+    name = BLACK_BARS_TAG.sub('', name)
 
     # Remove modifiers only if release markers present, and never the first
     # word of a title (avoids eating legitimate titles like "Uncut Gems" or

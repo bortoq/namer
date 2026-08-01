@@ -871,6 +871,16 @@ class TestMultiEpisode:
         assert meta['_skip'] is True
         assert new_name == 'Show.S01E01_02.mkv'
 
+    def test_uncut_black_tag_is_not_an_edition_modifier(self, monkeypatch):
+        """'uncut_black' = uncropped black bars -> plain '{title} ({year}).{ext}'."""
+        self._disable_online(monkeypatch)
+        from namer.core import generate_new_name
+        new_name, meta = generate_new_name(
+            'Gone Girl (2014).uncut_black.mkv',
+            pattern='{title} ({year}) {mod}.{ext}')
+        assert meta.get('_skip') is not True
+        assert new_name == 'Gone Girl (2014).mkv', f"got {new_name!r}"
+
     def test_process_directory_skips_multi_episode(self, monkeypatch, tmp_path):
         self._disable_online(monkeypatch)
         from namer.core import process_directory

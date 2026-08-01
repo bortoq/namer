@@ -122,6 +122,16 @@ MODIFIER_STRIP_PATTERN = re.compile(rf'\b(?:{_MODIFIER_ALTERNATION})\b', re.IGNO
 MODIFIER_NON_FIRST_PATTERN = re.compile(
     rf'(?<!^)(?:{_MODIFIER_ALTERNATION})\b', re.IGNORECASE)
 
+# "uncut_black" style video-technical tag: the video keeps its (uncropped)
+# black bars.  This is NOT the film-edition "Uncut" modifier — it must never
+# become mod="Uncut" nor leak its words into the title.  Matches either word
+# order and dot/underscore/space separators.
+BLACK_BARS_TAG = re.compile(
+    r'\b(?:uncut|uncropped)[._\s-]+(?:black|bars)\b'
+    r'|\b(?:black|bars)[._\s-]+(?:uncut|uncropped)\b',
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class QualityInfo:
@@ -144,6 +154,9 @@ def parse_quality(title: str) -> QualityInfo:
     """Parse quality information from a torrent/release title."""
     qi = QualityInfo()
     normalized = title.replace('_', ' ')
+    # "uncut_black" = uncropped black bars (video-technical tag), not an
+    # edition modifier — drop it before the modifier scan.
+    normalized = BLACK_BARS_TAG.sub('', normalized)
 
     # Resolution
     for res, pat in RESOLUTION_PATTERNS:
