@@ -14,14 +14,24 @@ _SERIES_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Multi-episode file: S01E01E02 / S01E01E02E03 (a single file holding several
-# episodes).  A rename target can only express one episode, so such files must
-# be skipped rather than silently renamed to the first episode number.
+# Multi-episode file: a single file holding several episodes.  A rename target
+# can only express one episode, so such files must be skipped rather than
+# silently renamed to the first episode number.
+# Covered forms:
+#   S01E01E02 / S01E01E02E03          adjacent E-numbers
+#   S01E01-E02 / S01E01.E02           separator before second E
+#   S01E01-02 / S01E01.02             second episode without 'E' prefix
+#   S01E01 & E02 / S01E01+E02         '&' / '+' separators
+#   1x01-1x02 / 1x01-02               NxNN forms (with/without second season)
 _MULTI_EPISODE_PATTERN = re.compile(
     r'''(?:
-        (?:^|[.\s-])S\d{1,2}(?:E\d{1,3}){2,}        # S01E01E02
-        | (?:^|[.\s-])S\d{1,2}E\d{1,3}-E\d{1,3}     # S01E01-E03
-        | (?:^|[.\s-])\d{1,2}x\d{1,3}-\d{1,2}x\d{1,3}  # 1x01-1x02
+        (?:^|[.\s-])S\d{1,2}(?:E\d{1,3}){2,}
+        | (?:^|[.\s-])S\d{1,2}E\d{1,3}(?:\s*[-.+&]\s*)E\d{1,3}
+        # Bare second episode number: must not be a resolution width or a
+        # resolution with p/i suffix (S01E01-720p is one episode, not two).
+        | (?:^|[.\s-])S\d{1,2}E\d{1,3}(?:\s*[-.+&]\s*)(?!(?:480|576|720)\b)\d{1,3}(?![\dpi])
+        | (?:^|[.\s-])\d{1,2}x\d{1,3}(?:\s*[-.+&]\s*)(?!(?:480|576|720)\b)\d{1,3}(?![\dpi])
+        | (?:^|[.\s-])\d{1,2}x\d{1,3}(?:\s*[-.+&]\s*)\d{1,2}x\d{1,3}
     )''',
     re.IGNORECASE | re.VERBOSE,
 )

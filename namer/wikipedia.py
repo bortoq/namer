@@ -377,25 +377,35 @@ def get_translated_title(foreign_title: str, target_lang: str = 'en',
     # English Wikipedia may still find the page (e.g. anime romaji titles).
     # Search resolves redirects, so the first hit for a romaji/foreign title
     # is usually the English-named article ('Yuru Camp' -> 'Laid-Back Camp').
-    # Only the first hit is considered, and only when its Wikidata entity is
-    # a media work matching the file context ('Dark' -> the concept page
-    # 'Darkness' is rejected).
+    # Scan ALL results like the non-Latin branch: the first hit can be a
+    # concept/person page while the actual media work is the second one
+    # ('Mother!' -> 'Mother' concept first, the film second).
     if not source_lang:
-        page_title = _search_page(foreign_title, 'en')
-        if page_title:
+        page_titles = _search_pages(foreign_title, 'en')
+        translated = None
+        for i, page_title in enumerate(page_titles):
             translated = _translated_for_candidate(
-                page_title, 'en', target_lang, is_series, year, first_result=True)
-            if translated and translated != foreign_title:
-                return translated
+                page_title, 'en', target_lang, is_series, year,
+                first_result=(i == 0))
+            if translated:
+                break
+        if translated and translated != foreign_title:
+            return translated
         return foreign_title
 
     # If source == target, nothing to do
     if source_lang == target_lang:
         return foreign_title
 
-    # Check cache (v3: ignores entries produced by older, buggier resolution)
+    # Check cache.  v4 keys include the resolution context (is_series/year)
+    # because the same localized title can map to different Wikidata entities
+    # for a film vs a series (or different years).  Old v3/unversioned keys
+    # are ignored (they may hold context-polluted values).
     cache = _load_cache()
-    cache_key = f'v3:{foreign_title.strip().lower()}:{source_lang}:{target_lang}'
+    ctx_series = 'series' if is_series else ('movie' if is_series is False else 'any')
+    ctx_year = year if year is not None else ''
+    cache_key = (f'v4:{foreign_title.strip().lower()}:{source_lang}:{target_lang}'
+                 f':{ctx_series}:{ctx_year}')
     cached = cache.get(cache_key)
     if cached:
         return cached

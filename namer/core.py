@@ -1,5 +1,7 @@
 """Rename engine — generates new names and performs (or previews) rename."""
 
+import ctypes
+import errno
 import os
 import re
 import string
@@ -285,14 +287,55 @@ def generate_new_name(
     return new_name, meta
 
 
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
+
+_renameat2 = None  # lazily bound libc.renameat2
+
+
+def _get_renameat2():
+    """Return libc.renameat2 or raise OSError(ENOSYS) when unavailable."""
+    global _renameat2
+    if _renameat2 is not None:
+        return _renameat2
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        fn = libc.renameat2
+        fn.argtypes = [ctypes.c_int, ctypes.c_char_p,
+                       ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        fn.restype = ctypes.c_int
+    except (AttributeError, OSError):
+        raise OSError(errno.ENOSYS, 'renameat2 not available')
+    _renameat2 = fn
+    return fn
+
+
+def _rename_noreplace(src: str, dest: str) -> bool:
+    """Atomic no-replace rename via renameat2(RENAME_NOREPLACE).
+
+    Returns True on success; False when *dest* already exists (nothing moved).
+    Raises OSError(ENOSYS) when the primitive is unavailable on this platform.
+    """
+    rc = _get_renameat2()(_AT_FDCWD, os.fsencode(src),
+                          _AT_FDCWD, os.fsencode(dest), _RENAME_NOREPLACE)
+    if rc == 0:
+        return True
+    err = ctypes.get_errno()
+    if err == errno.EEXIST:
+        return False
+    raise OSError(err, os.strerror(err))
+
+
 def _rename_no_clobber(src: str, dest: str) -> bool:
     """Atomically move *src* to *dest* without ever overwriting an existing file.
 
-    Uses the hard-link + unlink technique: ``os.link`` fails atomically with
-    FileExistsError if *dest* already exists, closing the TOCTOU window between
-    the caller's ``os.path.exists`` check and the rename.  On filesystems
-    without hard links (FAT, some network mounts) falls back to a re-checked
-    ``os.rename``.
+    Primary path: ``os.link`` + ``os.unlink`` — ``os.link`` fails atomically
+    with FileExistsError when *dest* exists, closing the TOCTOU window.
+    On filesystems without hard links (FAT, some network mounts) it falls back
+    to renameat2(RENAME_NOREPLACE), which is equally atomic and no-clobber.
+    If neither primitive is available, an OSError is raised and the caller
+    reports a failed rename — the source file is left in place rather than
+    risking an overwrite via a non-atomic exists()+os.rename().
 
     Returns True on success; False when *dest* exists (nothing was moved).
     """
@@ -300,12 +343,16 @@ def _rename_no_clobber(src: str, dest: str) -> bool:
         os.link(src, dest)
     except FileExistsError:
         return False
-    except OSError:
-        # Hard links unsupported here — re-check and fall back to rename.
-        if os.path.exists(dest):
-            return False
-        os.rename(src, dest)
-        return True
+    except OSError as e:
+        if e.errno in (errno.EPERM, errno.EOPNOTSUPP, errno.ENOTSUP,
+                       errno.ENOSYS, errno.EXDEV):
+            try:
+                return _rename_noreplace(src, dest)
+            except OSError as e2:
+                raise OSError(
+                    f'cannot rename without overwrite (no atomic '
+                    f'no-replace primitive): {e2}') from e2
+        raise
     # Hard link created: drop the source name.  If the unlink fails, remove
     # the new hard link too so no duplicate is left behind.
     try:
@@ -325,7 +372,9 @@ def _next_free_name(directory: str, safe_name: str, reserved: Optional[set]) -> 
     counter = 1
     while True:
         candidate = f'{base}_{counter}{ext}'
-        if not os.path.exists(os.path.join(directory, candidate)) and (
+        # lexists: a broken symlink still occupies the name (os.path.exists
+        # would say False, but os.link/os.rename refuse to use the entry).
+        if not os.path.lexists(os.path.join(directory, candidate)) and (
                 reserved is None or candidate not in reserved):
             return candidate
         counter += 1
@@ -362,7 +411,7 @@ def rename_file(
 
     # Step 2: resolve conflicts (checks both filesystem and reserved set)
     dest_basename = safe_name
-    if os.path.exists(dest) or (reserved is not None and dest_basename in reserved):
+    if os.path.lexists(dest) or (reserved is not None and dest_basename in reserved):
         dest_basename = _next_free_name(directory, safe_name, reserved)
         dest = os.path.join(directory, dest_basename)
 

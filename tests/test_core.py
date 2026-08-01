@@ -1,5 +1,7 @@
 """Tests for namer.core."""
 
+import errno
+import os
 import sys
 sys.path.insert(0, '/home/user/work/namer')
 
@@ -582,6 +584,90 @@ class TestRenameNoClobber:
         assert (tmp_path / 'New.mkv').read_bytes() == b'SOURCE'
         assert not src.exists()
 
+    def test_rename_no_clobber_fallback_race_retries_next_free(self, tmp_path, monkeypatch):
+        """81-001: on the renameat2 fallback path, a destination that appears
+        between the conflict check and the rename must be claimed, not
+        overwritten — the retry loop moves to the next free name."""
+        from namer import core
+        src = tmp_path / 'Movie.mkv'
+        src.write_bytes(b'SOURCE')
+
+        real_noreplace = core._rename_noreplace
+        calls = {'n': 0}
+
+        def racing_noreplace(s, d):
+            calls['n'] += 1
+            if os.path.basename(d) == 'New.mkv' and calls['n'] == 1:
+                # Dest materialises in the race window; simulate EEXIST
+                with open(d, 'wb') as f:
+                    f.write(b'OTHER')
+                return False
+            return real_noreplace(s, d)
+
+        monkeypatch.setattr(core.os, 'link',
+                            lambda *a: (_ for _ in ()).throw(OSError(errno.EXDEV, 'cross-device')))
+        monkeypatch.setattr(core, '_rename_noreplace', racing_noreplace)
+        assert core.rename_file(str(src), 'New.mkv') is True
+        assert (tmp_path / 'New.mkv').read_bytes() == b'OTHER'  # untouched
+        assert (tmp_path / 'New_1.mkv').read_bytes() == b'SOURCE'
+        assert not src.exists()
+
+    def test_rename_no_clobber_no_atomic_primitive_fails_safely(self, tmp_path, monkeypatch):
+        """81-001: when neither os.link nor renameat2 is usable, the rename
+        must FAIL and leave the source in place — never fall back to a
+        non-atomic exists()+os.rename() that could overwrite a foreign file."""
+        from namer import core
+        src = tmp_path / 'Movie.mkv'
+        src.write_bytes(b'SOURCE')
+        (tmp_path / 'New.mkv').write_bytes(b'FOREIGN')  # the file at risk
+
+        def no_link(*a):
+            raise OSError(errno.EPERM, 'Operation not permitted')
+
+        def no_noreplace(*a):
+            raise OSError(errno.ENOSYS, 'renameat2 not available')
+
+        monkeypatch.setattr(core.os, 'link', no_link)
+        monkeypatch.setattr(core, '_rename_noreplace', no_noreplace)
+        assert core.rename_file(str(src), 'New.mkv') is False  # reported error
+        assert (tmp_path / 'Movie.mkv').read_bytes() == b'SOURCE'   # source survives
+        assert (tmp_path / 'New.mkv').read_bytes() == b'FOREIGN'    # foreign file untouched
+
+    def test_rename_no_clobber_broken_symlink_dest_occupied(self, tmp_path):
+        """81-002: a broken symlink still occupies its name — the rename must
+        pick the next free name instead of looping forever or choosing the
+        symlink's name."""
+        from namer import core
+        src = tmp_path / 'Movie.mkv'
+        src.write_bytes(b'SOURCE')
+        broken = tmp_path / 'New.mkv'
+        broken.symlink_to(tmp_path / 'nowhere.mkv')  # dangling target
+        assert not broken.exists()  # os.path.exists is False for the target
+        assert core.rename_file(str(src), 'New.mkv') is True
+        assert not broken.exists()  # symlink itself still there (or gone but never target)
+        assert (tmp_path / 'New_1.mkv').read_bytes() == b'SOURCE'
+        assert not src.exists()
+
+    def test_dry_run_and_real_resolve_same_dest_for_broken_symlink(self, tmp_path):
+        """81-002: dry-run must report exactly the destination a real run uses,
+        even when the conflicting entry is a broken symlink (exists() lies)."""
+        from namer import core
+        src = tmp_path / 'Movie.mkv'
+        src.write_bytes(b'SOURCE')
+        broken = tmp_path / 'New.mkv'
+        broken.symlink_to(tmp_path / 'nowhere.mkv')
+
+        resolved = []
+        assert core.rename_file(str(src), 'New.mkv', dry_run=True, resolved=resolved) is True
+        dry_dest = resolved[0]
+        assert dry_dest == 'New_1.mkv'
+
+        # Real run on a fresh copy must converge on the same basename.
+        src2 = tmp_path / 'Movie2.mkv'
+        src2.write_bytes(b'SOURCE2')
+        assert core.rename_file(str(src2), 'New.mkv') is True
+        assert (tmp_path / 'New_1.mkv').read_bytes() == b'SOURCE2'
+        assert not src2.exists()
 
 class TestMultiEpisode:
     """B9-006: S01E01E02 must be skipped safely, not renamed to S01E01."""
@@ -597,9 +683,32 @@ class TestMultiEpisode:
 
     def test_parse_marks_multi_episode(self):
         from namer.parser import parse_file
-        assert parse_file('Show.S01E01E02.mkv')['is_multi_episode'] is True
-        assert parse_file('Show.S01E01.mkv')['is_multi_episode'] is False
-        assert parse_file('Show.S01E01-E02.mkv')['is_multi_episode'] is True
+        # 81-004: all documented multi-episode forms are detected
+        multi = [
+            'Show.S01E01E02.mkv',
+            'Show.S01E01-E02.mkv',
+            'Show.S01E01-02.mkv',
+            'Show.1x01-1x02.mkv',
+            'Show.1x01-02.mkv',
+            'Show.S01E01.E02.mkv',
+            'Show.S01E01 & E02.mkv',
+            'Show.S01E01+E02.mkv',
+        ]
+        for f in multi:
+            assert parse_file(f)['is_multi_episode'] is True, f
+        # single-episode + resolution/year noise must NOT be flagged
+        single = [
+            'Show.S01E01.mkv',
+            'Show.S01E01.1080p.mkv',
+            'Show.S01E01.720p.mkv',
+            'Show.S01E01-720p.mkv',
+            'Show.S01E01-720.mkv',
+            'Show.S01E01.2160p.mkv',
+            'Show.S01E01.2020.mkv',
+            'Show.S01E01.EpisodeName.mkv',
+        ]
+        for f in single:
+            assert parse_file(f)['is_multi_episode'] is False, f
 
     def test_generate_new_name_skips_multi_episode(self, monkeypatch):
         self._disable_online(monkeypatch)

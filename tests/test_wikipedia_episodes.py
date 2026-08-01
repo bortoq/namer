@@ -173,7 +173,7 @@ def test_get_translated_title_label_fallback_prefers_media_entity(monkeypatch):
 def test_get_translated_title_latin_concept_page_not_translated(monkeypatch):
     """'Dark' → first en.wiki hit 'Darkness' is a concept (not a media work) →
     the already-English title is kept unchanged (no 'darkness')."""
-    monkeypatch.setattr(wiki, '_search_page', lambda t, l: 'Darkness')
+    monkeypatch.setattr(wiki, '_search_pages', lambda t, l: ['Darkness'])
     monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: 'Q204170')
     monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: 'darkness')
     monkeypatch.setattr(wiki, '_get_wikidata_types', _types_mock({'Q204170': CONCEPT}))
@@ -183,7 +183,7 @@ def test_get_translated_title_latin_concept_page_not_translated(monkeypatch):
 
 def test_get_translated_title_latin_redirect_translated(monkeypatch):
     """'Yuru Camp' → en.wiki resolves to 'Laid-Back Camp' (anime type) → translated."""
-    monkeypatch.setattr(wiki, '_search_page', lambda t, l: 'Laid-Back Camp')
+    monkeypatch.setattr(wiki, '_search_pages', lambda t, l: ['Laid-Back Camp'])
     monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: 'Q28691353')
     monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: 'Laid-Back Camp')
     monkeypatch.setattr(wiki, '_get_wikidata_types', _types_mock({'Q28691353': ANIME}))
@@ -227,7 +227,7 @@ def test_get_translated_title_disambiguation_resolved_when_year_and_type_match(m
 def test_get_translated_title_lowercase_media_label_accepted(monkeypatch):
     """B9-002: a lowercase localized label of a media work is valid —
     'Mother!' → it must yield 'madre!', not the untranslated 'Mother!'."""
-    monkeypatch.setattr(wiki, '_search_page', lambda t, l: 'Mother!')
+    monkeypatch.setattr(wiki, '_search_pages', lambda t, l: ['Mother!'])
     monkeypatch.setattr(wiki, '_get_langlink', lambda *a: None)
     monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: 'Q25339558')
     monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: 'madre!')
@@ -245,6 +245,59 @@ def test_get_translated_title_lowercase_media_label_accepted_ru_path(monkeypatch
     monkeypatch.setattr(wiki, '_get_wikidata_types', _types_mock({'Q25339558': FILM}))
     monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q25339558': 2017}))
     assert wiki.get_translated_title('Мама!', 'it') == 'madre!'
+
+
+def test_get_translated_title_cache_respects_is_series_context(tmp_path, monkeypatch):
+    """81-003: a series translation must not pollute a later movie lookup
+    for the same localized title (cache key includes context)."""
+    monkeypatch.setattr(wiki, '_search_pages',
+                        lambda t, l: ['Тьма', 'Тьма (телесериал)'])
+    monkeypatch.setattr(wiki, '_get_langlink',
+                        lambda page, f, t: 'Dark (TV series)' if 'телесериал' in page else None)
+    qids = {'Тьма': 'Q204170', 'Тьма (телесериал)': 'Q28443710'}
+    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: qids.get(page))
+    monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: None)
+    monkeypatch.setattr(wiki, '_get_wikidata_types',
+                        _types_mock({'Q204170': CONCEPT, 'Q28443710': SERIES}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q28443710': 2017}))
+    assert wiki.get_translated_title('Тьма', 'en', source_lang='ru',
+                                     is_series=True) == 'Dark (TV series)'
+    # Same title, movie context → must NOT reuse the series translation.
+    assert wiki.get_translated_title('Тьма', 'en', source_lang='ru',
+                                     is_series=False) == 'Тьма'
+
+
+def test_get_translated_title_cache_respects_year_context(tmp_path, monkeypatch):
+    """81-003: year is part of the cache key — different year must not reuse."""
+    monkeypatch.setattr(wiki, '_search_pages', lambda t, l: ['Она', 'Она — мужчина'])
+    monkeypatch.setattr(wiki, '_get_langlink',
+                        lambda page, f, t: "She's the Man" if 'мужчина' in page else None)
+    monkeypatch.setattr(wiki, '_get_wikidata_id',
+                        lambda page, l: {'Она': 'Q20433871',
+                                         'Она — мужчина': 'Q72925'}.get(page))
+    monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: None)
+    monkeypatch.setattr(wiki, '_get_wikidata_types',
+                        _types_mock({'Q20433871': DISAMBIG, 'Q72925': FILM}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q72925': 2006}))
+    # year 2006 resolves; year 2013 must not reuse the 2006 result from cache
+    assert wiki.get_translated_title('Она', 'en', year=2006) == "She's the Man"
+    assert wiki.get_translated_title('Она', 'en', year=2013) == 'Она'
+
+
+def test_get_translated_title_latin_concept_first_media_second(monkeypatch):
+    """81-005: first en.wiki hit is a concept, the media entity is the second
+    hit — with year/is_series context the second hit must win."""
+    monkeypatch.setattr(wiki, '_search_pages', lambda t, l: ['Mother', 'Mother!'])
+    monkeypatch.setattr(wiki, '_get_langlink', lambda *a: None)
+    monkeypatch.setattr(wiki, '_get_wikidata_id',
+                        lambda page, l: {'Mother': 'Q171318', 'Mother!': 'Q25339558'}.get(page))
+    monkeypatch.setattr(wiki, '_get_wikidata_label',
+                        lambda qid, l: 'madre!' if qid == 'Q25339558' else None)
+    monkeypatch.setattr(wiki, '_get_wikidata_types',
+                        _types_mock({'Q171318': {'Q171318'}, 'Q25339558': FILM}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'Q25339558': 2017}))
+    assert wiki.get_translated_title('Mother!', 'it', is_series=False,
+                                     year=2017) == 'madre!'
 
 
 def test_get_translated_title_source_equals_target(monkeypatch):
