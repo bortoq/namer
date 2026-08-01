@@ -777,6 +777,16 @@ class TestMultiEpisode:
             'Show.S01E01.24 fps.mkv',
             'Show.1x01.10-bit.mkv',
             'Show.1x01.60 fps.mkv',
+            # BD8-001: numeric episode titles / release suffixes are single
+            'Battlestar.Galactica.S01E01.33.mkv',
+            'Doctor.Who.S03E07.42.mkv',
+            'Show.S01E01.12.Monkeys.mkv',
+            'Show.S01E01.101.Dalmatians.mkv',
+            'Show.S01E01.123ABC.mkv',
+            'Show.S01E01.100MB.mkv',
+            # dot-separated bare numbers are ambiguous numeric titles
+            'Show.S01E01.02.mkv',
+            'Show.1x01.02.mkv',
         ]
         for f in single:
             assert parse_file(f)['is_multi_episode'] is False, f
@@ -811,6 +821,17 @@ class TestMultiEpisode:
             name, pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
         assert meta['_skip'] is True
         assert new_name == os.path.basename(name)
+
+    def test_numeric_episode_title_file_is_renamed_not_skipped(
+            self, monkeypatch):
+        """BD8-001: S01E01.33 is a single episode and is renamed normally."""
+        self._disable_online(monkeypatch)
+        from namer.core import generate_new_name
+        new_name, meta = generate_new_name(
+            'Battlestar.Galactica.S01E01.33.mkv',
+            pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
+        assert meta.get('_skip') is not True
+        assert new_name == 'Battlestar Galactica.S01E01.mkv'
 
     def test_process_directory_skips_multi_episode(self, monkeypatch, tmp_path):
         self._disable_online(monkeypatch)

@@ -22,7 +22,10 @@ _SERIES_PATTERN = re.compile(
 # with a separator inside (10-bit, 10 bit, 60 fps, 24 fps).  Instead we locate
 # the primary episode marker and inspect only the nearest right-hand token(s):
 #   * a second full marker (SxxExx / NxNN / E-number)  -> multi-episode;
-#   * a plausible bare episode number (S01E01-02)      -> multi-episode;
+#   * a bare number after an explicit range separator ('-', '+', '&', 'and'),
+#     e.g. S01E01-02                                     -> multi-episode;
+#   * a dot/space-separated bare number is ambiguous (numeric episode titles
+#     like "S01E01.33", "S01E01.12.Monkeys") and stays single -> single;
 #   * a quality/audio/video token (10bit, 60 fps, 5.1, 1080p, 2020) -> single.
 
 # Bare numbers with these values are resolution widths - never a second episode.
@@ -43,24 +46,19 @@ def _strip_video_extension(file_name: str) -> str:
     )
 
 
-def _strip_leading_separators(s: str) -> str:
-    """Drop separator runs and the word 'and' from the start of *s*."""
-    while True:
-        s = re.sub(r'^[.\s\-_+&,]+', '', s)
-        m = re.match(r'and(?=[\s.\-&+,]|$)', s, re.IGNORECASE)
-        if not m:
-            return s
-        s = s[m.end():]
-
-
 def _second_episode_after_marker(rest: str) -> bool:
     """Inspect the substring after a primary episode marker.
 
     *rest* is the lowercased basename remainder following the marker.  True
-    when the nearest tokens describe a second episode rather than a
-    quality/audio/video token.
+    when the nearest tokens describe a second episode rather than a numeric
+    episode title or a quality/audio/video token.
     """
-    rest = _strip_leading_separators(rest)
+    # Normalize the word separator 'and' to '&' first, so the leading
+    # separator run (and its length) is consistent.
+    rest = re.sub(r'\band\b', '&', rest, flags=re.IGNORECASE)
+    m = re.match(r'[.\s\-_+&,]+', rest)
+    sep = m.group(0) if m else ''
+    rest = rest[len(sep):]
     # Second full marker: SxxExx / NxNN / bare E-number (E02).  The E-number
     # branch also covers adjacent E-numbers ("S01E01E02" -> remainder "E02").
     if re.match(r'(?:s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3}|e\d{1,3})(?![0-9])', rest):
@@ -79,6 +77,12 @@ def _second_episode_after_marker(rest: str) -> bool:
         return False
     # Resolution widths, years and other 4-digit numbers are not episodes.
     if num in _RESOLUTION_WIDTHS or len(num) >= 4:
+        return False
+    # A bare number is a second episode only after an explicit range
+    # separator ('-', '+', '&', 'and').  After '.', ' ' or '_' it is
+    # ambiguous (numeric episode titles like "S01E01.33", "S01E01.12.
+    # Monkeys") and is left as a single episode instead of a false skip.
+    if not any(c in sep for c in '-+&'):
         return False
     return True
 
