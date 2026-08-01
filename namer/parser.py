@@ -4,7 +4,7 @@ import os
 import re
 from typing import Optional, Tuple
 
-from namer.quality import parse_quality, strip_modifiers, QualityInfo
+from namer.quality import parse_quality, QualityInfo, MODIFIER_NON_FIRST_PATTERN
 
 # ── Patterns (adapted from sator/normalizer.py and sator/title.py) ───────
 
@@ -22,8 +22,11 @@ _SERIES_PATTERN = re.compile(
 # with a separator inside (10-bit, 10 bit, 60 fps, 24 fps).  Instead we locate
 # the primary episode marker and inspect only the nearest right-hand token(s):
 #   * a second full marker (SxxExx / NxNN / E-number)  -> multi-episode;
-#   * a bare number after an explicit range separator ('-', '+', '&', 'and'),
-#     e.g. S01E01-02                                     -> multi-episode;
+#   * a bare number close to the first episode (a real range like S01E01-02,
+#     S03E07-08, E099-100) after a range separator ('-', '+', '&', 'and', '_')
+#                                                      -> multi-episode;
+#   * an arbitrary bare number (S01E01-33, S01E01-42) is a numeric episode
+#     title, not a range                              -> single;
 #   * a dot/space-separated bare number is ambiguous (numeric episode titles
 #     like "S01E01.33", "S01E01.12.Monkeys") and stays single -> single;
 #   * a quality/audio/video token (10bit, 60 fps, 5.1, 1080p, 2020) -> single.
@@ -37,6 +40,10 @@ _TECH_NUMBER_UNITS = re.compile(
     re.IGNORECASE,
 )
 
+# A bare number is a second episode only when it is close to the first one.
+# Arbitrary values ("S01E01-33", "S03E07-42") are numeric episode titles.
+_MAX_RANGE_GAP = 2
+
 
 def _strip_video_extension(file_name: str) -> str:
     """Strip a known video extension from a basename, if present."""
@@ -46,12 +53,19 @@ def _strip_video_extension(file_name: str) -> str:
     )
 
 
-def _second_episode_after_marker(rest: str) -> bool:
+def _episode_from_marker(marker: str) -> int:
+    """Extract the episode number from a primary marker ('.S01E01' -> 1, '1x01' -> 1)."""
+    m = re.search(r'(?:s\d{1,2}e|e|x)(\d{1,3})', marker)
+    return int(m.group(1)) if m else 0
+
+
+def _second_episode_after_marker(rest: str, first_episode: int) -> bool:
     """Inspect the substring after a primary episode marker.
 
-    *rest* is the lowercased basename remainder following the marker.  True
-    when the nearest tokens describe a second episode rather than a numeric
-    episode title or a quality/audio/video token.
+    *rest* is the lowercased basename remainder following the marker; the
+    *first_episode* number comes from the marker itself.  True when the
+    nearest tokens describe a second episode rather than a numeric episode
+    title or a quality/audio/video token.
     """
     # Normalize the word separator 'and' to '&' first, so the leading
     # separator run (and its length) is consistent.
@@ -78,11 +92,18 @@ def _second_episode_after_marker(rest: str) -> bool:
     # Resolution widths, years and other 4-digit numbers are not episodes.
     if num in _RESOLUTION_WIDTHS or len(num) >= 4:
         return False
-    # A bare number is a second episode only after an explicit range
-    # separator ('-', '+', '&', 'and').  After '.', ' ' or '_' it is
-    # ambiguous (numeric episode titles like "S01E01.33", "S01E01.12.
-    # Monkeys") and is left as a single episode instead of a false skip.
-    if not any(c in sep for c in '-+&'):
+    # A bare number is a second episode only when (a) it follows a range
+    # separator ('-', '+', '&', 'and', or '_' which commonly replaces a dash
+    # in ranges like "S01E01_02") and (b) it is close to the first episode.
+    # An arbitrary number ("S01E01-33", "S03E07-42") is a numeric episode
+    # title, not a range; dot/space separators stay ambiguous (single).
+    if not any(c in sep for c in '-+&_'):
+        return False
+    try:
+        second = int(num)
+    except ValueError:
+        return False
+    if second <= first_episode or second - first_episode > _MAX_RANGE_GAP:
         return False
     return True
 
@@ -92,8 +113,8 @@ def _is_multi_episode(file_name: str) -> bool:
 
     Token-level detection: find the primary episode marker (SxxExx or NxNN)
     and check only the nearest right-hand tokens for a second episode marker
-    or a number range.  Quality/audio/video tokens are never read as a second
-    episode number.
+    or an adjacent number range.  Quality/audio/video tokens are never read
+    as a second episode number.
     """
     base = _strip_video_extension(file_name)
     if not base:
@@ -101,7 +122,8 @@ def _is_multi_episode(file_name: str) -> bool:
     lower = base.lower()
     for m in re.finditer(
             r'(?:^|[.\s\-_+&,])+(?:s\d{1,2}e\d{1,3}|\d{1,2}x\d{2,3})', lower):
-        if _second_episode_after_marker(lower[m.end():]):
+        first_episode = _episode_from_marker(m.group(0))
+        if _second_episode_after_marker(lower[m.end():], first_episode):
             return True
     return False
 
@@ -266,6 +288,27 @@ def extract_year(file_name: str) -> Optional[int]:
     return None
 
 
+def _title_case_uniform_latin(title: str) -> str:
+    """Title-case a uniformly-cased Latin title ("MALICE" -> "Malice").
+
+    Fires only when every letter is ASCII (Latin) and all letters share one
+    case — i.e. the name carries no mixed-case title information.  Mixed-case
+    titles ("Gone Girl", "Mieruko chan") and non-Latin titles (Cyrillic etc.)
+    are left untouched so real capitalization and foreign names survive.
+    """
+    if not title:
+        return title
+    letters = [c for c in title if c.isalpha()]
+    if not letters:
+        return title
+    if not all(c.isascii() for c in letters):
+        return title
+    if not (all(c.isupper() for c in letters)
+            or all(c.islower() for c in letters)):
+        return title
+    return ' '.join(w.capitalize() if w else w for w in title.split())
+
+
 def clean_title(file_name: str) -> str:
     """Derive a clean show/movie title from the filename.
 
@@ -286,18 +329,21 @@ def clean_title(file_name: str) -> str:
     name = _SINGLE_DIGIT_DOT_EPISODE.sub('', name)
     name = _SERIES_X_FORMAT.sub('', name)
 
-    # Remove only the last year (release year), keep earlier years like "2001"
-    years = list(_YEAR_PATTERN.finditer(name))
-    if years:
-        last_year = years[-1]
-        name = name[:last_year.start()] + name[last_year.end():]
-
-    # Check for release markers BEFORE removal (needed for modifier/group guards)
+    # Check for release markers BEFORE the year is removed — the release year
+    # itself is a marker, and modifiers sit after it ("Gone Girl (2014).Uncut",
+    # "American Psycho (2000) uncut").  Computing the flag after year removal
+    # leaves the modifier words stuck in the title.
     has_release_markers = bool(
         _QUALITY_TOKENS.search(name)
         or _SOURCE_TOKENS.search(name)
         or _YEAR_PATTERN.search(name)
     )
+
+    # Remove only the last year (release year), keep earlier years like "2001"
+    years = list(_YEAR_PATTERN.finditer(name))
+    if years:
+        last_year = years[-1]
+        name = name[:last_year.start()] + name[last_year.end():]
 
     # Remove quality/resolution/codec tokens
     name = _QUALITY_TOKENS.sub('', name)
@@ -305,10 +351,11 @@ def clean_title(file_name: str) -> str:
     # Remove source tokens
     name = _SOURCE_TOKENS.sub('', name)
 
-    # Remove modifiers only if release markers present
-    # (avoids eating legitimate title words like "Extended" in "Extended Family")
+    # Remove modifiers only if release markers present, and never the first
+    # word of a title (avoids eating legitimate titles like "Uncut Gems" or
+    # "Extended Family" whose first word coincides with a modifier name).
     if has_release_markers:
-        name = strip_modifiers(name)
+        name = MODIFIER_NON_FIRST_PATTERN.sub('', name)
 
     # Remove release group at end (-GROUP) only if release markers present
     # Avoids eating legitimate hyphenated words like "Spider-Man", "X-Men".
@@ -323,7 +370,7 @@ def clean_title(file_name: str) -> str:
     name = re.sub(r'[._-]', ' ', name)
     name = re.sub(r'\s+', ' ', name).strip()
 
-    return name
+    return _title_case_uniform_latin(name)
 
 
 

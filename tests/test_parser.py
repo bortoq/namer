@@ -508,6 +508,54 @@ class TestNmr005Regression:
         assert s == 2, f"season={s}"
         assert e == 5, f"episode={e}"
 
+class TestModifierInTitle:
+    """Release modifiers (Uncut/Unrated/Director's Cut) must not leak into
+    the movie title; they belong to the 'mod' field only."""
+
+    @staticmethod
+    @pytest.mark.parametrize("fname,exp_title,exp_mod", [
+        ("Midsommar (2019) DiRECTORS CUT.mkv", "Midsommar", "Director's Cut"),
+        ("American Psycho (2000) uncut.mkv", "American Psycho", "Uncut"),
+        ("Basic Instinct (1992) Unrated.mkv", "Basic Instinct", "Unrated"),
+    ])
+    def test_modifier_stripped_from_title_kept_in_mod(fname, exp_title, exp_mod):
+        meta = parse_file(fname)
+        assert meta["title"] == exp_title, f"title={meta['title']!r}"
+        assert meta["mod"] == exp_mod, f"mod={meta['mod']!r}"
+
+    def test_gone_girl_uncut_black(self):
+        """Modifier word must not appear in the title; 'Uncut' stays in mod."""
+        meta = parse_file("Gone Girl (2014).uncut_black.mkv")
+        assert "uncut" not in meta["title"].lower(), f"title={meta['title']!r}"
+        assert meta["mod"] == "Uncut"
+
+    def test_clean_title_with_year_present_strips_modifier(self):
+        """Year counts as a release marker, so modifiers after it are removed."""
+        assert clean_title("Gone Girl (2014).uncut.mkv") == "Gone Girl"
+        assert clean_title("Midsommar (2019) DiRECTORS CUT.mkv") == "Midsommar"
+
+    def test_title_first_word_modifier_word_is_preserved(self):
+        """'Uncut' in 'Uncut Gems' and 'Extended' in 'Extended Family' are titles."""
+        assert clean_title("Uncut.Gems.2019.mkv") == "Uncut Gems"
+        assert clean_title("Extended.Family.S01E01.mkv") == "Extended Family"
+
+
+class TestTitleCaseNormalization:
+    """Uniform-case Latin titles are title-cased; mixed/non-Latin are kept."""
+
+    @staticmethod
+    @pytest.mark.parametrize("fname,exp_title", [
+        ("MALICE (1993).avi", "Malice"),
+        ("disclosure (1994).avi", "Disclosure"),
+        ("невидимый гость.2016.mkv", "невидимый гость"),
+        ("Mieruko.chan.S01E01.mkv", "Mieruko chan"),
+        ("2001.A.Space.Odyssey.1968.mkv", "2001 A Space Odyssey"),
+        ("The.Matrix.1999.1080p.BluRay.x264.mkv", "The Matrix"),
+    ])
+    def test_title_case(fname, exp_title):
+        assert parse_file(fname)["title"] == exp_title, f"title={parse_file(fname)['title']!r}"
+
+
 class TestSpecialEpisodeDetection:
     """Tests for [Special]/[OVA] detection in parse_file."""
 

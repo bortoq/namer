@@ -744,6 +744,10 @@ class TestMultiEpisode:
             'Show.S01E01 and E02.mkv',
             'Show.1x01 1x02.mkv',
             'Show.1x01 and 1x02.mkv',
+            # 813-002: underscore replaces a dash in adjacent ranges
+            'Show.S01E01_02.mkv',
+            'Show.S01E01_03.mkv',
+            'Show.S03E07_08.mkv',
         ]
         for f in multi:
             assert parse_file(f)['is_multi_episode'] is True, f
@@ -787,6 +791,15 @@ class TestMultiEpisode:
             # dot-separated bare numbers are ambiguous numeric titles
             'Show.S01E01.02.mkv',
             'Show.1x01.02.mkv',
+            # 813-001: numeric episode titles after dash are single episodes
+            'Battlestar.Galactica.S01E01-33.mkv',
+            'Doctor.Who.S03E07-42.mkv',
+            'Show.S01E01-12.Monkeys.mkv',
+            'Show.S01E01-101.Dalmatians.mkv',
+            'Show.S01E01 - 33.mkv',
+            # non-adjacent bare numbers are numeric titles, not ranges
+            'Show.S01E01-04.mkv',
+            'Show.S03E07-42.mkv',
         ]
         for f in single:
             assert parse_file(f)['is_multi_episode'] is False, f
@@ -832,6 +845,31 @@ class TestMultiEpisode:
             pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
         assert meta.get('_skip') is not True
         assert new_name == 'Battlestar Galactica.S01E01.mkv'
+
+    def test_dash_numeric_episode_title_is_renamed_not_skipped(
+            self, monkeypatch):
+        """813-001: S01E01-33 is a single episode (33 is the title)."""
+        self._disable_online(monkeypatch)
+        from namer.core import generate_new_name
+        new_name, meta = generate_new_name(
+            'Battlestar.Galactica.S01E01-33.mkv',
+            pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
+        assert meta.get('_skip') is not True
+        assert new_name == 'Battlestar Galactica.S01E01.mkv'
+
+    def test_underscore_bare_multi_episode_is_skipped(self, monkeypatch):
+        """813-002: S01E01_02 is a range and must not be renamed to S01E01."""
+        from namer.parser import parse_file
+        parsed = parse_file('Show.S01E01_02.mkv')
+        assert parsed['is_multi_episode'] is True
+
+        self._disable_online(monkeypatch)
+        from namer.core import generate_new_name
+        new_name, meta = generate_new_name(
+            'Show.S01E01_02.mkv',
+            pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
+        assert meta['_skip'] is True
+        assert new_name == 'Show.S01E01_02.mkv'
 
     def test_process_directory_skips_multi_episode(self, monkeypatch, tmp_path):
         self._disable_online(monkeypatch)

@@ -114,6 +114,14 @@ MODIFIERS = [
 _MODIFIER_ALTERNATION = '|'.join(f'(?:{pat.pattern})' for _, pat in MODIFIERS)
 MODIFIER_STRIP_PATTERN = re.compile(rf'\b(?:{_MODIFIER_ALTERNATION})\b', re.IGNORECASE)
 
+# Modifier words are stripped from a title only when they are NOT the first
+# word: "Uncut Gems" and "Extended Family" are legitimate titles whose first
+# word coincides with a modifier name.  Real release modifiers sit after the
+# title ("Gone Girl (2014).Uncut", "Midsommar (2019) DIRECTOR'S CUT"), so
+# protecting the first word keeps genuine titles intact.
+MODIFIER_NON_FIRST_PATTERN = re.compile(
+    rf'(?<!^)(?:{_MODIFIER_ALTERNATION})\b', re.IGNORECASE)
+
 
 @dataclass
 class QualityInfo:
