@@ -305,6 +305,38 @@ def test_get_translated_title_source_equals_target(monkeypatch):
     assert wiki.get_translated_title('Тьма', 'ru') == 'Тьма'
 
 
+def test_latin_ambiguous_series_without_year_stays_conservative(monkeypatch):
+    """F648-002: an already-Latin title ('Show') without a year must NOT be
+    resolved to a later, unrelated series hit ('The Big Show Show')."""
+    monkeypatch.setattr(wiki, '_search_pages',
+                        lambda t, l: ['Show', 'Television show', 'The Big Show Show'])
+    monkeypatch.setattr(wiki, '_get_langlink', lambda *a: None)
+    qids = {'Show': 'QD', 'Television show': 'QP', 'The Big Show Show': 'QS'}
+    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: qids.get(page))
+    monkeypatch.setattr(wiki, '_get_wikidata_label', lambda qid, l: None)
+    monkeypatch.setattr(wiki, '_get_wikidata_types',
+                        _types_mock({'QD': DISAMBIG, 'QP': CONCEPT, 'QS': SERIES}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'QS': 2020}))
+    # is_series=True without year: the 3rd hit (a series) must NOT be accepted.
+    assert wiki.get_translated_title('Show', 'en', is_series=True, year=None) == 'Show'
+
+
+def test_latin_ambiguous_series_resolved_with_matching_year(monkeypatch):
+    """F648-002: with the file's year matching the later series hit, the
+    ambiguity IS resolved — the year is strong evidence."""
+    monkeypatch.setattr(wiki, '_search_pages',
+                        lambda t, l: ['Show', 'Television show', 'The Big Show Show'])
+    monkeypatch.setattr(wiki, '_get_langlink', lambda *a: None)
+    qids = {'Show': 'QD', 'Television show': 'QP', 'The Big Show Show': 'QS'}
+    monkeypatch.setattr(wiki, '_get_wikidata_id', lambda page, l: qids.get(page))
+    monkeypatch.setattr(wiki, '_get_wikidata_label',
+                        lambda qid, l: 'The Big Show Show' if qid == 'QS' else None)
+    monkeypatch.setattr(wiki, '_get_wikidata_types',
+                        _types_mock({'QD': DISAMBIG, 'QP': CONCEPT, 'QS': SERIES}))
+    monkeypatch.setattr(wiki, '_get_wikidata_year', _year_mock({'QS': 2020}))
+    assert wiki.get_translated_title('Show', 'en', is_series=True, year=2020) == 'The Big Show Show'
+
+
 def test_get_translated_title_empty(monkeypatch):
     assert wiki.get_translated_title('') == ''
 

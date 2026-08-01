@@ -3,6 +3,8 @@
 import sys
 sys.path.insert(0, '/home/user/work/namer')
 
+import pytest
+
 from namer.enricher import enrich_meta
 from namer.tmdb import (
     _resolve_key,
@@ -33,12 +35,13 @@ class TestEnrichMeta:
         enrich_meta(meta, tmdb_key='')
         assert meta.get('ep_title', '') == ''
 
+    @pytest.mark.live
     def test_series_enrich(self):
         """With a key, enrichment should work (network)."""
         import os
         key = os.environ.get('TMDB_API_KEY', '')
         if not key:
-            return
+            pytest.skip('TMDB_API_KEY not set')
         meta = {
             'title': 'Breaking Bad',
             'season': 1,
@@ -51,11 +54,12 @@ class TestEnrichMeta:
         assert meta.get('ep_title') == 'Pilot'
         assert meta['year'] == 2008
 
+    @pytest.mark.live
     def test_movie_year(self):
         import os
         key = os.environ.get('TMDB_API_KEY', '')
         if not key:
-            return
+            pytest.skip('TMDB_API_KEY not set')
         meta = {'title': 'The Matrix', 'is_series': False, 'year': 0}
         enrich_meta(meta, tmdb_key=key)
         assert meta['year'] == 1999

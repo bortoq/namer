@@ -1,7 +1,15 @@
-"""Tests for namer.tvmaze (uses cached data, no network on re-run)."""
+"""Tests for namer.tvmaze against the LIVE TVmaze API.
+
+These hit api.tvmaze.com directly, so they are excluded from the default
+run (addopts "-m 'not live'") and only executed with `pytest -m live`.
+"""
 
 import sys
 sys.path.insert(0, '/home/user/work/namer')
+
+import pytest
+
+pytestmark = pytest.mark.live
 
 from namer.tvmaze import enrich_episode_titles, search_show
 

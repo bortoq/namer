@@ -15,3 +15,7 @@ namer = "namer.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["namer*"]
+
+[tool.pytest.ini_options]
+markers = ["live: tests that require live network providers (Wikipedia/TVmaze/TMDB)"]
+addopts = "-m 'not live'"

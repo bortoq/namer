@@ -27,10 +27,12 @@ _MULTI_EPISODE_PATTERN = re.compile(
     r'''(?:
         (?:^|[.\s-])S\d{1,2}(?:E\d{1,3}){2,}
         | (?:^|[.\s-])S\d{1,2}E\d{1,3}(?:\s*[-.+&]\s*)E\d{1,3}
-        # Bare second episode number: must not be a resolution width or a
-        # resolution with p/i suffix (S01E01-720p is one episode, not two).
-        | (?:^|[.\s-])S\d{1,2}E\d{1,3}(?:\s*[-.+&]\s*)(?!(?:480|576|720)\b)\d{1,3}(?![\dpi])
-        | (?:^|[.\s-])\d{1,2}x\d{1,3}(?:\s*[-.+&]\s*)(?!(?:480|576|720)\b)\d{1,3}(?![\dpi])
+        # Bare second episode number: must not be a resolution width, a
+        # resolution with p/i suffix (S01E01-720p), a technical token
+        # (10bit/60fps), a year (2020), or a decimal audio channel (5.1)
+        # — all of those are single episodes, not a second episode number.
+        | (?:^|[.\s-])S\d{1,2}E\d{1,3}(?:\s*[-.+&]\s*)(?!(?:480|576|720)\b)\d{1,3}(?![a-zA-Z0-9]|\.\d)
+        | (?:^|[.\s-])\d{1,2}x\d{1,3}(?:\s*[-.+&]\s*)(?!(?:480|576|720)\b)\d{1,3}(?![a-zA-Z0-9]|\.\d)
         | (?:^|[.\s-])\d{1,2}x\d{1,3}(?:\s*[-.+&]\s*)\d{1,2}x\d{1,3}
     )''',
     re.IGNORECASE | re.VERBOSE,

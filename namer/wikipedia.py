@@ -384,9 +384,14 @@ def get_translated_title(foreign_title: str, target_lang: str = 'en',
         page_titles = _search_pages(foreign_title, 'en')
         translated = None
         for i, page_title in enumerate(page_titles):
+            # F648-002: for an already-Latin title ('Show') a non-first hit
+            # must match the title exactly (normalized) — otherwise a generic
+            # word would be resolved to an unrelated later series
+            # ('The Big Show Show').  First hits and year-matched hits are
+            # unaffected.
             translated = _translated_for_candidate(
                 page_title, 'en', target_lang, is_series, year,
-                first_result=(i == 0))
+                first_result=(i == 0), exact_title=foreign_title)
             if translated:
                 break
         if translated and translated != foreign_title:
@@ -433,9 +438,15 @@ def get_translated_title(foreign_title: str, target_lang: str = 'en',
     return translated
 
 
+def _normalize_title(title: str) -> str:
+    """Lowercase alphanumeric-only form used for exact-title comparison."""
+    return re.sub(r'[^a-z0-9]+', '', (title or '').lower())
+
+
 def _translated_for_candidate(page_title: str, from_lang: str, to_lang: str,
                               is_series: Optional[bool], year: Optional[int],
-                              first_result: bool) -> Optional[str]:
+                              first_result: bool,
+                              exact_title: Optional[str] = None) -> Optional[str]:
     """Target-language title of *page_title* if it plausibly matches the file.
 
     Requires the Wikidata entity to be a media work whose type matches
@@ -443,6 +454,10 @@ def _translated_for_candidate(page_title: str, from_lang: str, to_lang: str,
     A non-first search hit is only trusted with a year or an explicit
     series context — otherwise the ambiguity is left unresolved and the
     original title is kept.
+
+    When *exact_title* is given (Latin/unknown branch), a non-first hit must
+    additionally match it exactly (normalized): an ambiguous English title
+    like 'Show' must not become a later unrelated hit 'The Big Show Show'.
     """
     qid = _get_wikidata_id(page_title, from_lang)
     if not qid:
@@ -458,8 +473,12 @@ def _translated_for_candidate(page_title: str, from_lang: str, to_lang: str,
         entity_year = _get_wikidata_year(qid)
         if entity_year is None or abs(entity_year - year) > 1:
             return None
-    elif not first_result and is_series is not True:
-        return None
+    elif not first_result:
+        if exact_title is not None:
+            if _normalize_title(page_title) != _normalize_title(exact_title):
+                return None
+        elif is_series is not True:
+            return None
     translated = _get_langlink(page_title, from_lang, to_lang)
     if not translated:
         translated = _get_wikidata_label(qid, to_lang)

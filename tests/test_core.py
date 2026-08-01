@@ -5,7 +5,39 @@ import os
 import sys
 sys.path.insert(0, '/home/user/work/namer')
 
+import pytest
+
 from namer.core import generate_new_name
+
+
+def _has_renameat2():
+    """True when the Linux renameat2(RENAME_NOREPLACE) primitive exists."""
+    from namer import core
+    try:
+        core._get_renameat2()
+        return True
+    except OSError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _offline_providers(request, monkeypatch):
+    """F648-001: unit tests must never hit live Wikipedia/TVmaze/TMDB.
+
+    Every test in this module gets empty online feeds and a no-op Wikipedia
+    translation unless it opts into live providers via @pytest.mark.live.
+    """
+    if request.node.get_closest_marker('live'):
+        return
+    from namer.providers import Feed
+    monkeypatch.setattr('namer.providers.wikipedia_feed',
+                        lambda meta, lang: Feed('wikipedia', {}))
+    monkeypatch.setattr('namer.providers.tvmaze_feed',
+                        lambda meta, lang: Feed('tvmaze', {}))
+    monkeypatch.setattr('namer.providers.tmdb_feed',
+                        lambda meta, key, lang: Feed('tmdb', {}))
+    monkeypatch.setattr('namer.wikipedia.enrich_title_via_wiki',
+                        lambda meta, lang: False)
 
 
 class TestGenerateNewName:
@@ -48,6 +80,7 @@ class TestGenerateNewName:
         )
         assert name == "The Matrix (1999).mkv"
 
+@pytest.mark.live
 class TestGenerateNewNameWithEnrichment:
     def test_enrich_episode_title(self):
         """When tmdb_key is provided, episode title is looked up."""
@@ -113,6 +146,7 @@ class TestGenerateNewNameWithFlags:
 class TestEpTitleEnrichment:
     """Tests for ep_title enrichment (not scraped from filename)."""
 
+    @pytest.mark.live
     def test_yuru_camp_ep_title_from_enrichment_not_filename(self):
         """Yuru Camp: ep_title comes from TVmaze enrichment, NOT filename scraping."""
         name, meta = generate_new_name(
@@ -146,6 +180,7 @@ class TestEpTitleEnrichment:
 class TestDirectoryHeuristics:
     """Tests for directory-based title/season detection."""
 
+    @pytest.mark.live
     def test_season_from_directory_sxx(self):
         """Season detected from 'S7' in parent directory name."""
         import os, tempfile
@@ -250,14 +285,16 @@ class TestSpecialEpisodeHandling:
 
     def test_regular_keeps_season_1(self):
         """Regular episode keeps season 1."""
-        name, meta = generate_new_name("Show [01].mkv")
+        name, meta = generate_new_name(
+            "Show [01].mkv", pattern='{season:02d}.{episode:02d}.{ext}')
         assert meta.get('is_special') is False
         assert meta['season'] == 1
         assert meta['episode'] == 1
 
     def test_special_maps_to_season_0(self):
         """[Special] episode maps to season 0, preventing collision."""
-        name, meta = generate_new_name("Show [Special] [01].mkv")
+        name, meta = generate_new_name(
+            "Show [Special] [01].mkv", pattern='{season:02d}.{episode:02d}.{ext}')
         assert meta.get('is_special') is True
         assert meta['season'] == 0, f"season={meta['season']}"
         assert meta['episode'] == 1
@@ -266,7 +303,8 @@ class TestSpecialEpisodeHandling:
 
     def test_ova_maps_to_season_0(self):
         """[OVA] episode maps to season 0."""
-        name, meta = generate_new_name("Show [OVA] [05].mkv")
+        name, meta = generate_new_name(
+            "Show [OVA] [05].mkv", pattern='{season:02d}.{episode:02d}.{ext}')
         assert meta.get('is_special') is True
         assert meta['season'] == 0
         assert meta['episode'] == 5
@@ -295,8 +333,9 @@ class TestSpecialEpisodeHandling:
                 f.write('dummy')
             with open(spec, 'w') as f:
                 f.write('dummy')
-            name_reg, meta_reg = generate_new_name(reg)
-            name_spec, meta_spec = generate_new_name(spec)
+            pat = '{season:02d}.{episode:02d}.{ext}'
+            name_reg, meta_reg = generate_new_name(reg, pattern=pat)
+            name_spec, meta_spec = generate_new_name(spec, pattern=pat)
             assert name_reg != name_spec, f"collision: {name_reg} == {name_spec}"
             assert '01.01' in name_reg
             assert '00.01' in name_spec
@@ -568,8 +607,12 @@ class TestRenameNoClobber:
         assert (tmp_path / 'New_1.mkv').read_bytes() == b'SOURCE'
         assert not src.exists()
 
+    @pytest.mark.skipif(not _has_renameat2(), reason='Linux renameat2 only')
     def test_rename_no_clobber_hardlink_fallback_when_link_unsupported(self, tmp_path, monkeypatch):
-        """Filesystems without hard links fall back to a re-checked os.rename."""
+        """Filesystems without hard links fall back to the atomic
+        renameat2(RENAME_NOREPLACE) primitive (Linux); on platforms where
+        neither primitive exists the rename fails safely instead of
+        overwriting (covered by test_..._no_atomic_primitive_fails_safely)."""
         from namer import core
         src = tmp_path / 'Movie.mkv'
         src.write_bytes(b'SOURCE')
@@ -642,9 +685,11 @@ class TestRenameNoClobber:
         src.write_bytes(b'SOURCE')
         broken = tmp_path / 'New.mkv'
         broken.symlink_to(tmp_path / 'nowhere.mkv')  # dangling target
-        assert not broken.exists()  # os.path.exists is False for the target
+        assert not os.path.exists(str(broken))          # target missing (exists() lies)
+        assert os.path.lexists(str(broken))             # ... but the entry occupies the name
         assert core.rename_file(str(src), 'New.mkv') is True
-        assert not broken.exists()  # symlink itself still there (or gone but never target)
+        assert os.path.lexists(str(broken))             # entry still there (rename chose New_1)
+        assert not os.path.exists(str(broken))          # still dangling — never the target
         assert (tmp_path / 'New_1.mkv').read_bytes() == b'SOURCE'
         assert not src.exists()
 
@@ -696,7 +741,7 @@ class TestMultiEpisode:
         ]
         for f in multi:
             assert parse_file(f)['is_multi_episode'] is True, f
-        # single-episode + resolution/year noise must NOT be flagged
+        # single-episode + resolution/year/technical noise must NOT be flagged
         single = [
             'Show.S01E01.mkv',
             'Show.S01E01.1080p.mkv',
@@ -706,6 +751,19 @@ class TestMultiEpisode:
             'Show.S01E01.2160p.mkv',
             'Show.S01E01.2020.mkv',
             'Show.S01E01.EpisodeName.mkv',
+            # F648-003: technical release tokens are single episodes
+            'Show.S01E01.10bit.mkv',
+            'Show.S01E01.8bit.mkv',
+            'Show.S01E01.5.1.DTS.mkv',
+            'Show.S01E01.60fps.mkv',
+            'Show.S01E01.24fps.mkv',
+            'Show.S01E01.1080p.10bit.mkv',
+            'Show.S01E01.7.1.Atmos.mkv',
+            'Show.S01E01.2.0.mkv',
+            'Show.S01E01.1920.mkv',
+            'Show.1x01.10bit.mkv',
+            'Show.1x01.5.1.DTS.mkv',
+            'Show.1x01.60fps.mkv',
         ]
         for f in single:
             assert parse_file(f)['is_multi_episode'] is False, f
