@@ -137,7 +137,7 @@ def generate_new_name(
     # rename target — skip safely instead of renaming to the first episode.
     if meta.get('is_multi_episode'):
         meta['_skip'] = True
-        meta['_skip_reason'] = 'multi-episode file (SxxExxExx) — not renamed'
+        meta['_skip_reason'] = 'multi-episode file — not renamed'
         return os.path.basename(file_path), meta
 
     # ── Supplementary content check ────────────────────────────────────

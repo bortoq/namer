@@ -731,6 +731,7 @@ class TestMultiEpisode:
         # 81-004: all documented multi-episode forms are detected
         multi = [
             'Show.S01E01E02.mkv',
+            'Show.S01E01E02E03.mkv',
             'Show.S01E01-E02.mkv',
             'Show.S01E01-02.mkv',
             'Show.1x01-1x02.mkv',
@@ -738,6 +739,11 @@ class TestMultiEpisode:
             'Show.S01E01.E02.mkv',
             'Show.S01E01 & E02.mkv',
             'Show.S01E01+E02.mkv',
+            # F61-002: whitespace / word-separated second markers
+            'Show.S01E01 E02.mkv',
+            'Show.S01E01 and E02.mkv',
+            'Show.1x01 1x02.mkv',
+            'Show.1x01 and 1x02.mkv',
         ]
         for f in multi:
             assert parse_file(f)['is_multi_episode'] is True, f
@@ -764,6 +770,13 @@ class TestMultiEpisode:
             'Show.1x01.10bit.mkv',
             'Show.1x01.5.1.DTS.mkv',
             'Show.1x01.60fps.mkv',
+            # F61-001: technical tokens with a separator inside are single
+            'Show.S01E01.10-bit.mkv',
+            'Show.S01E01.10 bit.mkv',
+            'Show.S01E01.60 fps.mkv',
+            'Show.S01E01.24 fps.mkv',
+            'Show.1x01.10-bit.mkv',
+            'Show.1x01.60 fps.mkv',
         ]
         for f in single:
             assert parse_file(f)['is_multi_episode'] is False, f
@@ -775,6 +788,29 @@ class TestMultiEpisode:
             'Show.S01E01E02.mkv', pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
         assert name == 'Show.S01E01E02.mkv', f"expected skip, got {name!r}"
         assert meta['_skip'] is True
+
+    @pytest.mark.parametrize('name', [
+        'Show.S01E01 E02.mkv',
+        'Show.S01E01 and E02.mkv',
+        'Show.1x01 1x02.mkv',
+        'Show.1x01 and 1x02.mkv',
+    ])
+    def test_whitespace_word_separated_multi_episode_is_skipped(
+            self, monkeypatch, name):
+        """F61-002: whitespace/'and'-separated multi files are skipped safely."""
+        from namer.parser import parse_file
+
+        parsed = parse_file(name)
+        assert parsed['is_multi_episode'] is True
+        # the word separator must not leak into the show title
+        assert parsed['title'] == 'Show', f"title={parsed['title']!r}"
+
+        self._disable_online(monkeypatch)
+        from namer.core import generate_new_name
+        new_name, meta = generate_new_name(
+            name, pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
+        assert meta['_skip'] is True
+        assert new_name == os.path.basename(name)
 
     def test_process_directory_skips_multi_episode(self, monkeypatch, tmp_path):
         self._disable_online(monkeypatch)

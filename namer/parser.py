@@ -14,29 +14,92 @@ _SERIES_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Multi-episode file: a single file holding several episodes.  A rename target
-# can only express one episode, so such files must be skipped rather than
-# silently renamed to the first episode number.
-# Covered forms:
-#   S01E01E02 / S01E01E02E03          adjacent E-numbers
-#   S01E01-E02 / S01E01.E02           separator before second E
-#   S01E01-02 / S01E01.02             second episode without 'E' prefix
-#   S01E01 & E02 / S01E01+E02         '&' / '+' separators
-#   1x01-1x02 / 1x01-02               NxNN forms (with/without second season)
-_MULTI_EPISODE_PATTERN = re.compile(
-    r'''(?:
-        (?:^|[.\s-])S\d{1,2}(?:E\d{1,3}){2,}
-        | (?:^|[.\s-])S\d{1,2}E\d{1,3}(?:\s*[-.+&]\s*)E\d{1,3}
-        # Bare second episode number: must not be a resolution width, a
-        # resolution with p/i suffix (S01E01-720p), a technical token
-        # (10bit/60fps), a year (2020), or a decimal audio channel (5.1)
-        # — all of those are single episodes, not a second episode number.
-        | (?:^|[.\s-])S\d{1,2}E\d{1,3}(?:\s*[-.+&]\s*)(?!(?:480|576|720)\b)\d{1,3}(?![a-zA-Z0-9]|\.\d)
-        | (?:^|[.\s-])\d{1,2}x\d{1,3}(?:\s*[-.+&]\s*)(?!(?:480|576|720)\b)\d{1,3}(?![a-zA-Z0-9]|\.\d)
-        | (?:^|[.\s-])\d{1,2}x\d{1,3}(?:\s*[-.+&]\s*)\d{1,2}x\d{1,3}
-    )''',
-    re.IGNORECASE | re.VERBOSE,
+# Multi-episode detection (token-level): a rename target can only express
+# one episode, so a multi-episode file must be skipped rather than silently
+# renamed to the first episode number.  Detection is deliberately NOT a single
+# growing regex: regex-only matching both misses whitespace/word-separated
+# second markers (S01E01 E02, 1x01 and 1x02) and misfires on technical tokens
+# with a separator inside (10-bit, 10 bit, 60 fps, 24 fps).  Instead we locate
+# the primary episode marker and inspect only the nearest right-hand token(s):
+#   * a second full marker (SxxExx / NxNN / E-number)  -> multi-episode;
+#   * a plausible bare episode number (S01E01-02)      -> multi-episode;
+#   * a quality/audio/video token (10bit, 60 fps, 5.1, 1080p, 2020) -> single.
+
+# Bare numbers with these values are resolution widths - never a second episode.
+_RESOLUTION_WIDTHS = frozenset({'480', '576', '720', '1080', '2160'})
+
+# Unit words that turn a bare number into a technical token (10-bit, 60 fps).
+_TECH_NUMBER_UNITS = re.compile(
+    r"[\s.\-]*(?:bit|bits|fps|hz|khz|mhz|ch|channels?|kbps|mbps|vbr|cbr)\b",
+    re.IGNORECASE,
 )
+
+
+def _strip_video_extension(file_name: str) -> str:
+    """Strip a known video extension from a basename, if present."""
+    return re.sub(
+        r'\.(?:mkv|mp4|avi|m2ts|ts|m4v|mov|wmv|flv|webm|mpg|mpeg|vob|iso)$',
+        '', file_name, flags=re.IGNORECASE,
+    )
+
+
+def _strip_leading_separators(s: str) -> str:
+    """Drop separator runs and the word 'and' from the start of *s*."""
+    while True:
+        s = re.sub(r'^[.\s\-_+&,]+', '', s)
+        m = re.match(r'and(?=[\s.\-&+,]|$)', s, re.IGNORECASE)
+        if not m:
+            return s
+        s = s[m.end():]
+
+
+def _second_episode_after_marker(rest: str) -> bool:
+    """Inspect the substring after a primary episode marker.
+
+    *rest* is the lowercased basename remainder following the marker.  True
+    when the nearest tokens describe a second episode rather than a
+    quality/audio/video token.
+    """
+    rest = _strip_leading_separators(rest)
+    # Second full marker: SxxExx / NxNN / bare E-number (E02).  The E-number
+    # branch also covers adjacent E-numbers ("S01E01E02" -> remainder "E02").
+    if re.match(r'(?:s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3}|e\d{1,3})(?![0-9])', rest):
+        return True
+    m = re.match(r'(\d{1,4})', rest)
+    if not m:
+        return False
+    num = m.group(1)
+    after = rest[m.end():]
+    # Decimal audio channels: 5.1 / 7.1 / 2.0 - number followed by ".digit".
+    if re.match(r'\.\d', after):
+        return False
+    # Technical token: number continued by '-', ' ' or '.' to a unit word
+    # (10-bit, 10 bit, 60 fps, 24 fps, 10bit, 24fps).
+    if _TECH_NUMBER_UNITS.match(after):
+        return False
+    # Resolution widths, years and other 4-digit numbers are not episodes.
+    if num in _RESOLUTION_WIDTHS or len(num) >= 4:
+        return False
+    return True
+
+
+def _is_multi_episode(file_name: str) -> bool:
+    """Return True when *file_name* represents more than one episode.
+
+    Token-level detection: find the primary episode marker (SxxExx or NxNN)
+    and check only the nearest right-hand tokens for a second episode marker
+    or a number range.  Quality/audio/video tokens are never read as a second
+    episode number.
+    """
+    base = _strip_video_extension(file_name)
+    if not base:
+        return False
+    lower = base.lower()
+    for m in re.finditer(
+            r'(?:^|[.\s\-_+&,])+(?:s\d{1,2}e\d{1,3}|\d{1,2}x\d{2,3})', lower):
+        if _second_episode_after_marker(lower[m.end():]):
+            return True
+    return False
 
 # Fallback: standalone episode number like " - 01" (common anime format)
 #   Matches 2-3 digit number before quality bracket, end of name, or extension.
@@ -437,6 +500,7 @@ def parse_file(file_path: str) -> dict:
     # When SxxExx is detected, split title/ep_title at the marker boundary
     # This prevents episode name from leaking into the show title
     marker_match = (_SERIES_PATTERN.search(basename)
+                    or _SERIES_X_FORMAT.search(basename)
                     or _SEASON_DOT_EPISODE.search(basename)
                     or _SINGLE_DIGIT_DOT_EPISODE.search(basename)
                     or _EPISODE_FALLBACK.search(basename))
@@ -459,7 +523,7 @@ def parse_file(file_path: str) -> dict:
     dot_title = re.sub(r'\s+', '.', title.strip())
 
     is_series = season is not None
-    is_multi_episode = bool(_MULTI_EPISODE_PATTERN.search(basename))
+    is_multi_episode = _is_multi_episode(basename)
 
     # Dot-quality: quality label with dots instead of spaces (torrent-style)
     dot_quality = re.sub(r'\s+', '.', quality_label.strip())
