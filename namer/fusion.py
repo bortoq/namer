@@ -21,6 +21,7 @@ from typing import Dict, List, Optional
 from namer.voting import Verdict, Feed
 from namer.voting import FIELD_WEIGHTS, EXPENSIVE_FIELDS
 from namer.voting import _group_feeds, _sort_key, _verdict_for, update_scores
+from namer.voting import _mean_provider_confidence
 
 # Re-exported: fusion is the arbitration entry point but keeps the same
 # success-score tracking and the Scores type as voting.
@@ -54,21 +55,6 @@ def _posterior_for(feeds, field, scores) -> float:
     certainty = avg_conf
     posterior = share * certainty
     return min(posterior, 0.999)
-
-
-def _mean_provider_confidence(feeds, field, providers) -> float:
-    """Mean confidence across the winning providers for *field* (0.5 fallback)."""
-    confs = []
-    for feed in feeds:
-        if feed.abstain or feed.provider not in providers:
-            continue
-        fields_ = getattr(feed, 'fields', None)
-        c = fields_[field].confidence if fields_ and field in fields_ else None
-        if c is not None:
-            confs.append(c)
-    if not confs:
-        return 0.5  # legacy Feed: no confidence signal
-    return sum(confs) / len(confs)
 
 
 def fuse(feeds: List[Feed], scores: Optional[Dict] = None) -> Dict[str, Verdict]:

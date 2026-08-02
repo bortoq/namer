@@ -194,9 +194,11 @@ def _max_provider_confidence(feeds, field: str, providers: List[str]) -> float:
 def _mean_provider_confidence(feeds, field: str, providers: List[str]) -> float:
     """Mean self-reported confidence across the winning providers.
 
-    Used for the expensive-field consensus gate (A36-001): two agreeing
-    low-confidence providers must not make season/episode usable.  Legacy
-    Feed objects carry no confidence → return 1.0 so they pass unchanged.
+    Single source of truth used by BOTH the expensive-consensus decision gate
+    (voting._verdict_for) and the posterior (fusion._posterior_fore), so the
+    invariant "season/ep usable ⇒ fuse().confidence >= 0.6" cannot drift
+    (36D-001).  Legacy Feed objects carry no confidence → a neutral 1.0, i.e.
+    their raw matrix weight decides, preserving backward compatibility.
     """
     confs = []
     for feed in feeds:

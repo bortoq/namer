@@ -277,4 +277,47 @@ class TestContestedExpensiveConsensus:
             v = fuse(ops)['season']
             if v.usable:
                 assert v.confidence >= 0.6
+class TestLegacyFeedExpensiveInvariant:
+    """Regression for 36D-001: the posterior helper is shared between the
+    decision gate and fuse(), with a consistent legacy-Feed fallback (1.0),
+    so the invariant season/episode usable => fuse().confidence >= 0.6 holds
+    for confidence-less Feed objects.  Confidence-less feeds keep the raw
+    matrix weight (backward compatible), so uncontested consensus stays
+    usable at high posterior; contested only if the share keeps it >= 0.6."""
+
+    def test_legacy_feed_uncontested_consensus_usable_high_posterior(self):
+        feeds = [
+            Feed('filename', {'season': 1}),
+            Feed('dirname', {'season': 1}),
+        ]
+        v = fuse(feeds)['season']
+        assert v.usable
+        assert v.confidence >= 0.6
+
+    def test_legacy_feed_contested_consensus_respects_threshold(self):
+        feeds = [
+            Feed('filename', {'season': 1}),
+            Feed('dirname', {'season': 1}),
+            Feed('file', {'season': 2}),
+        ]
+        v = fuse(feeds)['season']
+        if v.usable:
+            assert v.confidence >= 0.6
+        if v.confidence < 0.6:
+            assert not v.usable
+
+    def test_legacy_feed_usable_implies_posterior_not_below_threshold(self):
+        # Uncontested + contested Feed sets: any usable season verdict must
+        # respect the posterior threshold (no helper drift between modules).
+        test_sets = [
+            ([Feed('filename', {'season': 1}), Feed('dirname', {'season': 1})], True),
+            ([Feed('filename', {'season': 1}), Feed('dirname', {'season': 2})], False),
+            ([Feed('filename', {'season': 1}), Feed('wikipedia', {'season': 1})], True),
+            ([Feed('filename', {'season': 1}), Feed('dirname', {'season': 1}),
+              Feed('file', {'season': 2})], True),
+        ]
+        for feeds, _ in test_sets:
+            v = fuse(feeds)['season']
+            if v.usable:
+                assert v.confidence >= 0.6
 
