@@ -124,7 +124,7 @@ def generate_new_name(
     Returns:
         ``(new_basename, metadata_dict)``
     """
-    from namer.voting import vote, update_scores, Scores
+    from namer.fusion import fuse, update_scores, Scores
 
     if progress is not None:
         progress.set_action('parsing feeds')
@@ -208,7 +208,7 @@ def generate_new_name(
     local = local_feeds(file_path, known_title)
     if progress is not None:
         progress.set_action('voting')
-    v1 = vote(local, scores)
+    v1 = fuse(local, scores)
 
     refused = [f for f in ('season', 'episode') if f in v1 and not v1[f].usable]
     for f in ('season', 'episode'):
@@ -238,7 +238,7 @@ def generate_new_name(
     all_feeds = local + online
     if progress is not None:
         progress.set_action('voting')
-    v = vote(all_feeds, scores)
+    v = fuse(all_feeds, scores)
     update_scores(scores, all_feeds, v)
 
     # Apply usable verdicts (accept + guess) to the metadata dict.

@@ -1,10 +1,12 @@
-"""Build provider feeds for the consensus vote.
+"""Build provider evidence feeds for metadata arbitration.
 
 Local providers (no network): filename, dirname, file (ffprobe).
 Online providers: wikipedia, tvmaze, tmdb.
 
-Feed values follow the template {} field names so the vote output can be
-rendered directly into the pattern.
+Each provider returns a :class:`namer.provider_opinion.ProviderOpinion`: a
+typed, per-field candidate with confidence.  The legacy flat dict is
+projected via ``opinion.values`` so the existing voting engine and template
+rendering keep working unchanged.
 """
 
 from __future__ import annotations
@@ -14,21 +16,29 @@ import re
 from typing import Dict, List, Optional
 
 from namer.parser import parse_file, title_from_path, _SERIES_PATTERN
-from namer.voting import Feed
+from namer.provider_opinion import ProviderOpinion
+from namer.identify.models import FieldCandidate
 
-# parse_file fields that vote as-is when non-empty.
+# Legacy alias: old code (notebooks, tests) imported ``Feed`` and built
+# ``Feed(provider, values)``.  ``Feed`` is now the same object.
+Feed = ProviderOpinion
+
+# parse_file fields that vote as-is when non-empty (technical/naming fields).
 _FILENAME_FIELDS = ('quality', 'resolution', 'source', 'codec', 'audio', 'hdr', 'mod')
+# Default confidence for those fields when present in the filename.
+_FILENAME_FIELD_CONF = dict.fromkeys(_FILENAME_FIELDS, 0.8)
+
 
 # ── Local providers ──────────────────────────────────────────────────────────
 
-def filename_feed(file_path: str, known_title: str = '') -> Feed:
+def filename_feed(file_path: str, known_title: str = '') -> ProviderOpinion:
     """Feed from the file's own name (the identity source for S/E)."""
     meta = parse_file(file_path)
-    values: Dict = {}
+    op = ProviderOpinion('filename')
 
     title = known_title or meta.get('title', '')
     if title:
-        values['title'] = title
+        op.set('title', title, 0.6)
 
     is_special = meta.get('is_special', False)
     season = meta.get('season', 0)
@@ -42,21 +52,27 @@ def filename_feed(file_path: str, known_title: str = '') -> Feed:
 
     # season=0 means "not found" unless the file is a special.
     if season != 0 or is_special:
-        values['season'] = season
+        op.set('season', season, 0.9)
     if episode:
-        values['episode'] = episode
+        op.set('episode', episode, 0.9)
     if meta.get('season_assumed'):
-        values['season_assumed'] = True
+        # Assumed seasons vote weakly: confidence reflects the guess.  We
+        # rebuild the season candidate with a lower confidence (FieldCandidate
+        # is frozen) rather than mutating it.
+        if 'season' in op.fields:
+            op.fields['season'] = FieldCandidate(
+                op.fields['season'].value, 0.6, op.fields['season'].sources)
+        op.meta['season_assumed'] = True
 
     for f in _FILENAME_FIELDS:
         v = meta.get(f)
         if v not in (None, '', 'Unknown'):
-            values[f] = v
+            op.set(f, v, _FILENAME_FIELD_CONF[f])
 
     if meta.get('year'):
-        values['year'] = meta['year']
+        op.set('year', meta['year'], 0.8)
 
-    return Feed('filename', values)
+    return op
 
 
 _SEASON_JAPANESE = {
@@ -128,49 +144,49 @@ def _season_from_directories(file_path: str) -> Optional[int]:
     return None
 
 
-def dirname_feed(file_path: str) -> Feed:
+def dirname_feed(file_path: str) -> ProviderOpinion:
     """Feed from the directory tree (show name + explicit season folders)."""
-    values: Dict = {}
+    op = ProviderOpinion('dirname')
     dir_title = title_from_path(file_path)
     if dir_title:
-        values['title'] = dir_title
+        op.set('title', dir_title, 0.7)
     season = _season_from_directories(file_path)
     if season is not None:
-        values['season'] = season
-    return Feed('dirname', values)
+        op.set('season', season, 0.8)
+    return op
 
 
-def file_feed(file_path: str) -> Feed:
+def file_feed(file_path: str) -> ProviderOpinion:
     """Feed from ffprobe (technical metadata + container tags)."""
-    values: Dict = {}
+    op = ProviderOpinion('file')
     try:
         from namer.ffprobe import enrich_from_file, get_format_metadata
         fmeta = enrich_from_file(file_path)
         if fmeta.get('codec'):
-            values['codec'] = fmeta['codec']
+            op.set('codec', fmeta['codec'], 0.95)
         if fmeta.get('resolution'):
-            values['resolution'] = f"{fmeta['resolution']}p"
+            op.set('resolution', f"{fmeta['resolution']}p", 0.95)
         if fmeta.get('audio'):
-            values['audio'] = fmeta['audio']
+            op.set('audio', fmeta['audio'], 0.95)
         if fmeta.get('channels'):
-            values['channels'] = fmeta['channels']
+            op.set('channels', fmeta['channels'], 0.9)
         if fmeta.get('hdr'):
-            values['hdr'] = fmeta['hdr']
+            op.set('hdr', fmeta['hdr'], 0.95)
         tags = get_format_metadata(file_path)
         if tags.get('show_name'):
-            values['title'] = tags['show_name']
+            op.set('title', tags['show_name'], 0.8)
         if tags.get('season'):
-            values['season'] = tags['season']
+            op.set('season', tags['season'], 0.8)
         if tags.get('episode'):
-            values['episode'] = tags['episode']
+            op.set('episode', tags['episode'], 0.8)
     except (ImportError, FileNotFoundError):
         pass
-    return Feed('file', values)
+    return op
 
 
 # ── Online providers ─────────────────────────────────────────────────────────
 
-def wikipedia_feed(meta: Dict, language: str) -> Feed:
+def wikipedia_feed(meta: Dict, language: str) -> ProviderOpinion:
     """Feed from Wikipedia: canonical/translated title, premiere year, ep titles.
 
     *meta* must already carry the title enriched by core (translation pass).
@@ -178,68 +194,70 @@ def wikipedia_feed(meta: Dict, language: str) -> Feed:
     assumed season the lookup target is unreliable, so we abstain instead of
     guessing a possibly-wrong episode title.
     """
-    values: Dict = {}
+    op = ProviderOpinion('wikipedia')
     try:
         from namer.wikipedia import fetch_episode_titles, fetch_show_year
         title = meta.get('title', '')
         if not title:
-            return Feed('wikipedia', values)
-        values['title'] = title
+            op.abstain = True
+            return op
+        op.set('title', title, 0.9)
         year = fetch_show_year(title, language)
         if year:
-            values['year'] = year
+            op.set('year', year, 0.85)
         if meta.get('is_series') and meta.get('episode') and not meta.get('season_assumed'):
             season = 0 if meta.get('is_special') else meta.get('season', 0)
             eps = fetch_episode_titles(title, language)
             ep_title = eps.get((season, meta['episode']))
             if ep_title:
-                values['ep_title'] = ep_title
+                op.set('ep_title', ep_title, 0.9)
     except Exception:
-        pass
-    return Feed('wikipedia', values)
+        op.abstain = True
+    return op
 
 
-def tvmaze_feed(meta: Dict, language: str) -> Feed:
+def tvmaze_feed(meta: Dict, language: str) -> ProviderOpinion:
     """Feed from TVmaze: canonical show name, premiere year, episode title."""
-    values: Dict = {}
+    op = ProviderOpinion('tvmaze')
     try:
         from namer.tvmaze import enrich_episode_titles
         m = dict(meta)
         enrich_episode_titles(m, language=language)
         if m.get('title'):
-            values['title'] = m['title']
+            op.set('title', m['title'], 0.9)
         if m.get('year'):
-            values['year'] = m['year']
+            op.set('year', m['year'], 0.85)
         if m.get('ep_title') and not meta.get('season_assumed'):
-            values['ep_title'] = m['ep_title']
+            op.set('ep_title', m['ep_title'], 0.9)
     except Exception:
-        pass
-    return Feed('tvmaze', values)
+        op.abstain = True
+    return op
 
 
-def tmdb_feed(meta: Dict, tmdb_key: str, language: str) -> Feed:
+def tmdb_feed(meta: Dict, tmdb_key: str, language: str) -> ProviderOpinion:
     """Feed from TMDB: localized title, year, episode title (requires key)."""
-    values: Dict = {}
+    op = ProviderOpinion('tmdb')
     if not tmdb_key:
-        return Feed('tmdb', values)
+        op.abstain = True
+        return op
     try:
         from namer.enricher import enrich_meta
         m = dict(meta)
         enrich_meta(m, tmdb_key, language)
         if m.get('title'):
-            values['title'] = m['title']
+            op.set('title', m['title'], 0.9)
         if m.get('year'):
-            values['year'] = m['year']
+            op.set('year', m['year'], 0.9)
         if m.get('ep_title') and not meta.get('season_assumed'):
-            values['ep_title'] = m['ep_title']
+            op.set('ep_title', m['ep_title'], 0.9)
     except Exception:
-        pass
-    return Feed('tmdb', values)
+        op.abstain = True
+    return op
 
 
 # ── Orchestration ────────────────────────────────────────────────────────────
 
-def local_feeds(file_path: str, known_title: str = '') -> List[Feed]:
+def local_feeds(file_path: str, known_title: str = '') -> List[ProviderOpinion]:
     """Local (no-network) feeds: filename, dirname, file (ffprobe)."""
     return [
         filename_feed(file_path, known_title),
@@ -248,7 +266,7 @@ def local_feeds(file_path: str, known_title: str = '') -> List[Feed]:
     ]
 
 
-def online_feeds(meta: Dict, tmdb_key: str = '', language: str = 'en') -> List[Feed]:
+def online_feeds(meta: Dict, tmdb_key: str = '', language: str = 'en') -> List[ProviderOpinion]:
     """Online feeds: wikipedia, tvmaze, (tmdb if key given).
 
     *meta* must carry the resolved title/season/episode hints — online feeds
@@ -267,6 +285,6 @@ def online_feeds(meta: Dict, tmdb_key: str = '', language: str = 'en') -> List[F
 
 
 def collect_feeds(file_path: str, meta: Dict, known_title: str = '',
-                  tmdb_key: str = '', language: str = 'en') -> List[Feed]:
+                  tmdb_key: str = '', language: str = 'en') -> List[ProviderOpinion]:
     """Build local + online feeds for *file_path* (single-pass helper)."""
     return local_feeds(file_path, known_title) + online_feeds(meta, tmdb_key, language)
