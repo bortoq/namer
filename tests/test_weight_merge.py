@@ -227,3 +227,54 @@ class TestExpensiveConsensusSafe:
         v = fuse([a, b])['season']
         assert v.usable
         assert v.confidence >= 0.6
+
+class TestContestedExpensiveConsensus:
+    """Regression for F379-001: the expensive-field consensus gate must use
+    the same posterior (share x mean confidence) as fuse(), so a contested
+    consensus whose runner-up drags fuse().confidence below 0.6 is not usable.
+    Invariant: season/episode usable => fuse().confidence >= 0.6."""
+
+    def test_filename_dirname_vs_file_below_posterior_threshold(self):
+        a = ProviderOpinion('filename'); a.set('season', 1, 0.6)
+        b = ProviderOpinion('dirname');  b.set('season', 1, 0.6)
+        c = ProviderOpinion('file');     c.set('season', 2, 1.0)
+        v = fuse([a, b, c])['season']
+        assert v.confidence < 0.6
+        assert v.decision == 'skip'
+        assert not v.usable
+
+    def test_filename_dirname_vs_file_episode(self):
+        a = ProviderOpinion('filename'); a.set('episode', 3, 0.6)
+        b = ProviderOpinion('dirname');  b.set('episode', 3, 0.6)
+        c = ProviderOpinion('file');     c.set('episode', 7, 1.0)
+        v = fuse([a, b, c])['episode']
+        assert v.confidence < 0.6
+        assert v.decision == 'skip'
+        assert not v.usable
+
+    def test_contested_consensus_above_threshold_still_usable(self):
+        # winner share high enough that posterior stays >= 0.6 despite runner-up
+        a = ProviderOpinion('filename'); a.set('season', 1, 0.95)
+        b = ProviderOpinion('dirname');  b.set('season', 1, 0.95)
+        c = ProviderOpinion('file');     c.set('season', 2, 1.0)
+        v = fuse([a, b, c])['season']
+        assert v.decision == 'accept'
+        assert v.confidence >= 0.6
+        assert v.usable
+
+    def test_invariant_usable_implies_posterior_not_below_threshold(self):
+        # Generic sweep: any usable season/episode verdict must have posterior >= 0.6.
+        combos = [
+            [('filename', 1, 0.95), ('dirname', 1, 0.95)],
+            [('filename', 1, 0.6), ('dirname', 1, 0.6), ('file', 2, 1.0)],
+            [('filename', 1, 0.9), ('dirname', 1, 0.8), ('file', 2, 1.0)],
+            [('wikipedia', 1, 0.9), ('tvmaze', 2, 1.0)],
+        ]
+        for combo in combos:
+            ops = []
+            for prov, season, conf in combo:
+                op = ProviderOpinion(prov); op.set('season', season, conf); ops.append(op)
+            v = fuse(ops)['season']
+            if v.usable:
+                assert v.confidence >= 0.6
+

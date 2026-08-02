@@ -65,10 +65,12 @@ MIN_EXPENSIVE_SINGLE_EFFECTIVE = 1.1
 MIN_EXPENSIVE_SINGLE_CONFIDENCE = 0.6
 
 # Even an agreeing *consensus* of 2+ providers must not produce a usable
-# expensive field on near-zero confidence (A36-001).  The invariant is
-# "usable ⇒ fuse().confidence >= 0.6": a high-confidence built-in pair
-# (filename 0.9 + dirname 0.8, mean 0.85) passes; a pair agreeing only at
-# mean 0.25 or 0.5 yields posterior < 0.6 and must not be usable.
+# expensive field on a low posterior (F379-001: winner share × mean
+# self-confidence). The invariant is "usable ⇒ fuse().confidence >= 0.6",
+# and this gate mirrors fuse(): uncontested high-confidence pair
+# (filename 0.9 + dirname 0.8, share 1.0 × 0.85) passes; a pair agreeing
+# only at mean 0.25/0.5 OR a contested consensus whose runner-up drags the
+# posterior below 0.6 is refused.
 MIN_EXPENSIVE_CONSENSUS_CONFIDENCE = 0.6
 
 # Title similarity threshold for cross-provider agreement.
@@ -309,7 +311,7 @@ def _verdict_for(feeds: List[Feed], field: str, scores: Scores) -> Optional[Verd
         # providers agreeing at confidence 0.01 must not make an expensive
         # field usable).
         if (win_n >= 2 and win_score > run_score
-                and _mean_provider_confidence(feeds, field, win['providers'])
+                and ratio * _mean_provider_confidence(feeds, field, win['providers'])
                 >= MIN_EXPENSIVE_CONSENSUS_CONFIDENCE):
             decision = 'accept'
         # Equal-strength camps → a real conflict; even the priority matrix
