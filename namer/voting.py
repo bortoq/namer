@@ -48,12 +48,16 @@ FIELD_WEIGHTS: Dict[str, Dict[str, float]] = {
 # Fields where a wrong guess is expensive → refuse unless the winner is solid.
 EXPENSIVE_FIELDS = frozenset({'season', 'episode'})
 
-# A lone vote on an expensive field is only accepted when its *effective*
-# weight (base x confidence) is high enough.  filename base 4.0 x 0.9 = 3.6
-# is an explicit confident filename; a low/zero-confidence candidate (e.g.
-# 4.0 x 0.1 = 0.4) is refused.  The 2.0 floor keeps legacy weak/assumed
-# filename (4.0 x 0.5 = 2.0) and explicit dirname (2.0) accepted.
-MIN_EXPENSIVE_SINGLE_EFFECTIVE = 2.0
+# A lone vote on an expensive field (season/episode) is only accepted when
+# its *effective* weight (base x confidence, x 0.5 when weak/assumed) is high
+# enough.  filename base 4.0 x 0.9 = 3.6 and explicit dirname (base 2.0 x
+# 0.8 = 1.6) are legitmate single signals; a 1.0 floor refuses base-1.0
+# providers (file / unknown: max effective weight 0.95 for their real
+# confidence) no matter how confident, and any low-confidence candidate (e.g.
+# filename 4.0 x 0.1 = 0.4).  Assumed-season filename (4.0 x 0.6 x 0.5 = 1.2)
+# still passes as the only signal.  Legacy Feed objects (no confidence) keep
+# the raw matrix weight and pass when it is >= 1.0.
+MIN_EXPENSIVE_SINGLE_EFFECTIVE = 1.0
 
 # Title similarity threshold for cross-provider agreement.
 TITLE_MATCH_RATIO = 0.85
@@ -154,26 +158,6 @@ def _effective_weight(feed, field: str, weights: Dict[str, float]) -> float:
     fields = getattr(feed, 'fields', None)
     conf = fields[field].confidence if fields and field in fields else None
     return base * conf if conf is not None else base
-
-
-# A lone expensive-field vote is only accepted when its provider reports a
-# minimum confidence (audit 943-001).  Legacy Feed carries no confidence → fall
-# back to the base-priority rule so old behaviour is unchanged.
-MIN_EXPENSIVE_SINGLE_CONFIDENCE = 0.6
-
-def _lone_expensive_confident(feeds, field: str, providers: List[str]) -> bool:
-    confs = []
-    for feed in feeds:
-        if feed.abstain or feed.provider not in providers:
-            continue
-        fields = getattr(feed, 'fields', None)
-        c = fields[field].confidence if fields and field in fields else None
-        if c is not None:
-            confs.append(c)
-    if confs:
-        return max(confs) >= MIN_EXPENSIVE_SINGLE_CONFIDENCE
-    # legacy Feed: rely on effective score (base x no-confidence) already
-    return True
 
 
 # ── Clustering ───────────────────────────────────────────────────────────────
@@ -279,11 +263,12 @@ def _verdict_for(feeds: List[Feed], field: str, scores: Scores) -> Optional[Verd
         # winner is not trustworthy enough for expensive fields → refuse.
         elif by_priority:
             decision = 'skip'
-        # One provider, no opposition, and an explicit (non-assumed) signal
-        # from a source that can know the season (filename / online / dir) →
-        # accept.  Weak assumed values also pass here (no better signal).
-        elif (win_n == 1 and total == win_score
-              and _lone_expensive_confident(feeds, field, win['providers'])):
+        # One provider, no opposition, and a strong enough *effective* weight
+        # (base x confidence) from a source that can know the season
+        # (filename / online / dir) → accept.  A base-1.0 provider (file /
+        # unknown) can never reach the floor, and a low-confidence guess is
+        # refused.  Legacy Feeds keep their raw matrix weight.
+        elif win_n == 1 and total == win_score                 and win_score >= MIN_EXPENSIVE_SINGLE_EFFECTIVE:
             decision = 'accept'
         else:
             decision = 'skip'

@@ -41,6 +41,12 @@ class FieldCandidate:
     sources: List[str] = field(default_factory=list)
     reasons: List[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        """confidence is a probability in [0, 1] (audit 157-002)."""
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError(
+                f'confidence must be in [0, 1], got {self.confidence!r}')
+
 
 @dataclass(frozen=True)
 class Decision:

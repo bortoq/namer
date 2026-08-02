@@ -8,7 +8,7 @@ change voting behaviour for confidence-less feeds.
 import pytest
 
 from namer.provider_opinion import ProviderOpinion
-from namer.voting import _effective_weight, FIELD_WEIGHTS, Feed, vote
+from namer.voting import _effective_weight, FIELD_WEIGHTS, Feed, vote, MIN_EXPENSIVE_SINGLE_EFFECTIVE
 from namer.fusion import fuse
 
 
@@ -97,3 +97,49 @@ class TestLowConfidenceExpensiveField:
         v = fuse([a, b])
         assert v['season'].decision == 'accept'
         assert v['season'].confidence > 0.7
+
+
+class TestExpensiveEffectiveFloor:
+    """Regression for audit 157-001: the lone expensive-field gate must be
+    the *effective* weight (base x confidence), never confidence alone, so a
+    base-1.0 provider cannot single-handedly accept a season/episode."""
+
+    @pytest.mark.parametrize('provider', ['file', 'unknown'])
+    def test_lone_low_base_expensive_below_floor_skipped(self, provider):
+        op = ProviderOpinion(provider)
+        op.set('season', 7, 0.95)
+        assert _effective_weight(op, 'season', FIELD_WEIGHTS['season']) \
+            < MIN_EXPENSIVE_SINGLE_EFFECTIVE
+        v = vote([op])['season']
+        assert v.decision == 'skip'
+        assert not v.usable
+
+    def test_lone_confident_filename_still_accepted(self):
+        op = ProviderOpinion('filename')
+        op.set('season', 7, 0.95)
+        v = vote([op])['season']
+        assert v.decision == 'accept'
+        assert v.usable
+
+    def test_lone_explicit_dirname_accepted(self):
+        # dirname base 2.0 x 0.8 -> 1.6 >= floor
+        op = ProviderOpinion('dirname')
+        op.set('season', 7, 0.8)
+        v = vote([op])['season']
+        assert v.decision == 'accept'
+
+
+class TestConfidenceValidation:
+    """Regression for audit 157-002: confidence is a probability in [0, 1]."""
+
+    @pytest.mark.parametrize('conf', [-0.1, 1.1, 2.0, 99])
+    def test_provider_confidence_must_be_0_to_1(self, conf):
+        op = ProviderOpinion('filename')
+        with pytest.raises(ValueError):
+            op.set('season', 1, conf)
+
+    def test_fuse_confidence_stays_in_unit_interval(self):
+        a = ProviderOpinion('filename'); a.set('season', 1, 0.9)
+        b = ProviderOpinion('dirname');  b.set('season', 1, 0.8)
+        v = fuse([a, b])['season']
+        assert 0.0 <= v.confidence <= 1.0
