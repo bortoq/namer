@@ -92,6 +92,9 @@ class Identity:
     episode: Optional[FieldCandidate] = None
     episodes: List[FieldCandidate] = field(default_factory=list)
     is_multi_episode: Optional[Decision] = None
+    is_special: bool = False
+    season_assumed: bool = False
+    ext: str = ''
     quality: Optional[Dict[str, Any]] = None  # normalized quality dict
     duration: Optional[float] = None
     evidence: List[Evidence] = field(default_factory=list)

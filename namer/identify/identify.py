@@ -12,10 +12,11 @@ from namer.identify.models import (
     IdentifyInput, MediaType, Status,
 )
 from namer.parser import (
-    clean_title, extract_year, series_episode_numbers, _parse_season_episode_full,
-    _episode_from_marker, _SPECIAL_EPISODE_MARKERS, _RESOLUTION_WIDTHS,
-    _TECH_NUMBER_UNITS,
+    split_title_with_marker, extract_ext, extract_year, series_episode_numbers,
+    _parse_season_episode_full, _episode_from_marker, _SPECIAL_EPISODE_MARKERS,
+    _RESOLUTION_WIDTHS, _TECH_NUMBER_UNITS,
 )
+from namer.quality import parse_quality
 
 _EXT_RE = re.compile(r'\.([a-z0-9]+)$', re.IGNORECASE)
 _MARKER_RE = re.compile(
@@ -73,10 +74,23 @@ def identify_filename(input: "IdentifyInput") -> "Identity":
         ide.status = Status.UNRESOLVED
         return ide
 
-    title = clean_title(_stem(basename))
+    title = split_title_with_marker(basename)
     year = extract_year(basename)
     season, episode, assumed = _parse_season_episode_full(basename)
     eps = series_episode_numbers(basename)
+    quality = parse_quality(basename)
+    ide.ext = extract_ext(basename)
+    ide.is_special = bool(_SPECIAL_EPISODE_MARKERS.search(basename))
+    ide.season_assumed = bool(assumed)
+    ide.quality = {
+        'label': quality.quality_label or 'Unknown',
+        'resolution': f'{quality.resolution}p' if quality.resolution else '',
+        'source': quality.source,
+        'codec': quality.codec,
+        'audio': quality.audio,
+        'hdr': quality.hdr,
+        'mod': '/'.join(quality.modifiers) if quality.modifiers else '',
+    }
 
     if title:
         media_confidence = 0.9 if season is not None else 0.8

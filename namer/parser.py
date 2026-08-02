@@ -568,74 +568,69 @@ def extract_ep_title_from_filename(file_name: str) -> str:
 def parse_file(file_path: str) -> dict:
     """Parse a video file path and extract all available metadata.
 
+    Thin adapter over the identification layer: the identifying fields come
+    from :func:`namer.identify.identify_filename` (single source of truth),
+    and the legacy flat dict is projected for template placeholders.
+
     Returns a dict with keys matching the template placeholders:
         title, dot_title, season, episode, ext, year, quality,
         resolution, source, codec, audio, hdr, mod, is_series.
     """
+    from namer.identify import identify_filename, IdentifyInput,         MediaType, Status
+
     basename = os.path.basename(file_path)
+    ide = identify_filename(IdentifyInput(filename=basename))
 
-    ext = extract_ext(basename)
-    season, episode, season_assumed = _parse_season_episode_full(basename)
-    year = extract_year(basename)
-    quality: QualityInfo = parse_quality(basename)
+    title = ide.title_value or ''
+    season = ide.season.value if ide.season else None
+    episode = ide.episode.value if ide.episode else None
+    year = ide.year_value
+    q = ide.quality or {}
 
-    # Extract episode title from filename content after season/ep marker
-    # ep_title is no longer scraped from filename — comes only from enrichment
-
-    # When SxxExx is detected, split title/ep_title at the marker boundary
-    # This prevents episode name from leaking into the show title
-    marker_match = (_SERIES_PATTERN.search(basename)
-                    or _SERIES_X_FORMAT.search(basename)
-                    or _SEASON_DOT_EPISODE.search(basename)
-                    or _SINGLE_DIGIT_DOT_EPISODE.search(basename)
-                    or _EPISODE_FALLBACK.search(basename))
-    if marker_match:
-        before = basename[:marker_match.start()]
-        title = clean_title(before) if before.strip() else ''
-        # If no content before the marker (e.g. "S01E01.mkv"), title stays empty
-        # and will be filled later by directory heuristic or -t flag
-    else:
-        # No season/ep marker — use whole filename as title (movie or unknown)
-        title = clean_title(basename)
-
-    # Modifiers string
-    mod_str = '/'.join(quality.modifiers) if quality.modifiers else ''
-
-    # Quality label
-    quality_label = quality.quality_label or 'Unknown'
+    quality_label = q.get('label') or 'Unknown'
 
     # Dot-title (torrent-style)
     dot_title = re.sub(r'\s+', '.', title.strip())
-
-    is_series = season is not None
-    is_multi_episode = _is_multi_episode(basename)
-
     # Dot-quality: quality label with dots instead of spaces (torrent-style)
     dot_quality = re.sub(r'\s+', '.', quality_label.strip())
-
-    # Check for special episode markers (OVA, Special, etc.) in the
-    # original filename before clean_title strips bracketed content.
-    is_special = bool(_SPECIAL_EPISODE_MARKERS.search(basename))
 
     return {
         'title': title,
         'dot_title': dot_title,
         'dot_quality': dot_quality,
-        'is_special': is_special,
+        'is_special': ide.is_special,
         'season': season or 0,
         'episode': episode or 0,
-        'season_assumed': bool(season_assumed),
-        'ext': ext,
+        'season_assumed': bool(ide.season_assumed),
+        'ext': ide.ext,
         'year': year or 0,
         'quality': quality_label,
-        'resolution': f'{quality.resolution}p' if quality.resolution else '',
-        'source': quality.source,
-        'codec': quality.codec,
-        'audio': quality.audio,
-        'hdr': quality.hdr,
-        'mod': mod_str,
+        'resolution': q.get('resolution') or '',
+        'source': q.get('source') or '',
+        'codec': q.get('codec') or '',
+        'audio': q.get('audio') or '',
+        'hdr': q.get('hdr') or '',
+        'mod': q.get('mod') or '',
         'group': '',
         'ep_title': '',
-        'is_series': is_series,
-        'is_multi_episode': is_multi_episode,
+        'is_series': season is not None,
+        'is_multi_episode': ide.is_multi_episode_value,
     }
+
+
+def split_title_with_marker(file_name: str) -> str:
+    """Split the title at a season/episode marker boundary.
+
+    When SxxExx (variants) is detected, the show title is the text *before*
+    the marker, so an episode name after the marker never leaks into the show
+    title.  Without a marker the whole file name is the title.
+    """
+    marker_match = (_SERIES_PATTERN.search(file_name)
+                    or _SERIES_X_FORMAT.search(file_name)
+                    or _SEASON_DOT_EPISODE.search(file_name)
+                    or _SINGLE_DIGIT_DOT_EPISODE.search(file_name)
+                    or _EPISODE_FALLBACK.search(file_name))
+    if marker_match:
+        before = file_name[:marker_match.start()]
+        return clean_title(before) if before.strip() else ''
+    return clean_title(file_name)
