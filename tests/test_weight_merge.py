@@ -188,3 +188,42 @@ class TestExpensiveSafeGate:
         op.meta['season_assumed'] = True
         v = fuse([op])['season']
         assert v.usable
+
+
+class TestExpensiveConsensusSafe:
+    """Regression for A36-001: an agreeing 2+ provider consensus on an
+    expensive field must not be usable when self-confidence is near-zero,
+    even though no add contest.  Invariant: usable ⇒ fuse().confidence >= 0.6."""
+
+    @pytest.mark.parametrize('conf', [0.01, 0.1, 0.25, 0.5])
+    def test_low_confidence_consensus_season_not_usable(self, conf):
+        a = ProviderOpinion('filename'); a.set('season', 1, conf)
+        b = ProviderOpinion('dirname');  b.set('season', 1, conf)
+        v = fuse([a, b])['season']
+        assert v.confidence < 0.6
+        assert v.decision == 'skip'
+        assert not v.usable
+
+    @pytest.mark.parametrize('conf', [0.01, 0.1, 0.25])
+    def test_low_confidence_consensus_episode_not_usable(self, conf):
+        a = ProviderOpinion('filename'); a.set('episode', 1, conf)
+        b = ProviderOpinion('dirname');  b.set('episode', 1, conf)
+        v = fuse([a, b])['episode']
+        assert v.confidence < 0.6
+        assert v.decision == 'skip'
+        assert not v.usable
+
+    def test_low_confidence_online_consensus_not_usable(self):
+        a = ProviderOpinion('wikipedia'); a.set('season', 1, 0.01)
+        b = ProviderOpinion('tvmaze');    b.set('season', 1, 0.01)
+        v = fuse([a, b])['season']
+        assert v.confidence < 0.6
+        assert v.decision == 'skip'
+        assert not v.usable
+
+    def test_high_confidence_consensus_still_usable(self):
+        a = ProviderOpinion('filename'); a.set('season', 1, 0.9)
+        b = ProviderOpinion('dirname');  b.set('season', 1, 0.8)
+        v = fuse([a, b])['season']
+        assert v.usable
+        assert v.confidence >= 0.6

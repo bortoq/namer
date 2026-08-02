@@ -64,6 +64,13 @@ MIN_EXPENSIVE_SINGLE_EFFECTIVE = 1.1
 # be confident (>= 0.6), not just have a favourable base x conf product.
 MIN_EXPENSIVE_SINGLE_CONFIDENCE = 0.6
 
+# Even an agreeing *consensus* of 2+ providers must not produce a usable
+# expensive field on near-zero confidence (A36-001).  The invariant is
+# "usable ⇒ fuse().confidence >= 0.6": a high-confidence built-in pair
+# (filename 0.9 + dirname 0.8, mean 0.85) passes; a pair agreeing only at
+# mean 0.25 or 0.5 yields posterior < 0.6 and must not be usable.
+MIN_EXPENSIVE_CONSENSUS_CONFIDENCE = 0.6
+
 # Title similarity threshold for cross-provider agreement.
 TITLE_MATCH_RATIO = 0.85
 # A provider whose value came from a weak fallback (assumed season) votes
@@ -182,6 +189,25 @@ def _max_provider_confidence(feeds, field: str, providers: List[str]) -> float:
     return best if best is not None else 1.0
 
 
+def _mean_provider_confidence(feeds, field: str, providers: List[str]) -> float:
+    """Mean self-reported confidence across the winning providers.
+
+    Used for the expensive-field consensus gate (A36-001): two agreeing
+    low-confidence providers must not make season/episode usable.  Legacy
+    Feed objects carry no confidence → return 1.0 so they pass unchanged.
+    """
+    confs = []
+    for feed in feeds:
+        if feed.abstain or feed.provider not in providers:
+            continue
+        fields = getattr(feed, 'fields', None)
+        c = fields[field].confidence if fields and field in fields else None
+        if c is not None:
+            confs.append(c)
+    if not confs:
+        return 1.0
+    return sum(confs) / len(confs)
+
 # ── Clustering ───────────────────────────────────────────────────────────────
 
 def _group_feeds(feeds: List[Feed], field: str,
@@ -278,8 +304,13 @@ def _verdict_for(feeds: List[Feed], field: str, scores: Scores) -> Optional[Verd
     expensive = field in EXPENSIVE_FIELDS
 
     if expensive:
-        # A clear majority of agreeing providers beats the runner-up.
-        if win_n >= 2 and win_score > run_score:
+        # A clear majority of agreeing providers beats the runner-up — but
+        # only when their *own* confidence is not near-zero (A36-001: two
+        # providers agreeing at confidence 0.01 must not make an expensive
+        # field usable).
+        if (win_n >= 2 and win_score > run_score
+                and _mean_provider_confidence(feeds, field, win['providers'])
+                >= MIN_EXPENSIVE_CONSENSUS_CONFIDENCE):
             decision = 'accept'
         # Equal-strength camps → a real conflict; even the priority matrix
         # winner is not trustworthy enough for expensive fields → refuse.
