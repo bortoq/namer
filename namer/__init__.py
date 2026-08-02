@@ -5,3 +5,5 @@ Pipeline: parse filename -> typed identity (L1) -> provider evidence (L2)
 
 See ``doc/architecture-identify.md`` for the layer contracts.
 """
+
+__version__ = '0.1.0'

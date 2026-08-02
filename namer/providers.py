@@ -38,7 +38,7 @@ def filename_feed(file_path: str, known_title: str = '') -> ProviderOpinion:
 
     title = known_title or meta.get('title', '')
     if title:
-        op.set('title', title, 0.6)
+        op.set('title', title, 0.9)
 
     is_special = meta.get('is_special', False)
     season = meta.get('season', 0)

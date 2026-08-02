@@ -34,6 +34,12 @@ filename ──> parse_file ──> Identity (identify_filename)
 - `fuse()` ≡ `vote()` in winner + decision by construction; only `confidence`
   becomes a posterior probability. The equivalence harness lives in
   `tests/test_fusion.py`.
+- **Single source for provider weight:** effective weight =
+  `FIELD_WEIGHTS[field][provider] × candidate.confidence`
+  (`voting._effective_weight`). The priority matrix is the cross-provider base
+  and each provider's own confidence is the per-field lever; legacy
+  confidence-less feeds are unaffected (factor 1.0). See
+  `tests/test_weight_merge.py`.
 - Language codes + script detection: `namer/language.py` (pure, offline).
   `wikipedia.py` re-exports for backward compat.
 

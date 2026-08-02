@@ -134,6 +134,21 @@ def _values_agree(field: str, a: Any, b: Any) -> bool:
     return a == b
 
 
+# ── Single source of truth for provider weight ────────────────────────────────
+#
+# A provider's effective weight is the product of its priority in the matrix
+# (FIELD_WEIGHTS, cross-provider ranking) and its own confidence for the field
+# (ProviderOpinion.fields[field].confidence).  Legacy Feed objects carry no
+# confidence, so their weight stays equal to the matrix value — behaviour is
+# therefore unchanged for them.  This is the one place the two inputs meet.
+
+def _effective_weight(feed, field: str, weights: Dict[str, float]) -> float:
+    base = weights.get(feed.provider, 1.0)
+    fields = getattr(feed, 'fields', None)
+    conf = fields[field].confidence if fields and field in fields else None
+    return base * conf if conf is not None else base
+
+
 # ── Clustering ───────────────────────────────────────────────────────────────
 
 def _group_feeds(feeds: List[Feed], field: str,
@@ -172,7 +187,8 @@ def _group_feeds(feeds: List[Feed], field: str,
         if weak and field in EXPENSIVE_FIELDS and explicit_exists:
             continue  # an assumed value must not outvote an explicit one
         weight = weights.get(feed.provider, 1.0)
-        eff_weight = weight * (WEAK_WEIGHT_FACTOR if weak else 1.0)
+        eff_weight = _effective_weight(feed, field, weights) \
+            * (WEAK_WEIGHT_FACTOR if weak else 1.0)
         target = None
         for g in groups:
             if _values_agree(field, g['value'], val):
