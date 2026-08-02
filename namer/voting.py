@@ -48,16 +48,21 @@ FIELD_WEIGHTS: Dict[str, Dict[str, float]] = {
 # Fields where a wrong guess is expensive → refuse unless the winner is solid.
 EXPENSIVE_FIELDS = frozenset({'season', 'episode'})
 
-# A lone vote on an expensive field (season/episode) is only accepted when
-# its *effective* weight (base x confidence, x 0.5 when weak/assumed) is high
-# enough.  filename base 4.0 x 0.9 = 3.6 and explicit dirname (base 2.0 x
-# 0.8 = 1.6) are legitmate single signals; a 1.0 floor refuses base-1.0
-# providers (file / unknown: max effective weight 0.95 for their real
-# confidence) no matter how confident, and any low-confidence candidate (e.g.
-# filename 4.0 x 0.1 = 0.4).  Assumed-season filename (4.0 x 0.6 x 0.5 = 1.2)
-# still passes as the only signal.  Legacy Feed objects (no confidence) keep
-# the raw matrix weight and pass when it is >= 1.0.
-MIN_EXPENSIVE_SINGLE_EFFECTIVE = 1.0
+# A lone vote on an expensive field (season/episode) needs BOTH a strong
+# *effective* weight (base x confidence, x 0.5 when weak/assumed) AND a
+# minimum self-reported confidence.  filename explicit base 4.0 x 0.9 = 3.6
+# and explicit dirname (base 2.0 x 0.8 = 1.6) pass; assumed filename
+# (4.0 x 0.6 x 0.5 = 1.2) passes as the only signal.  The strict effective
+# floor 1.1 refuses base-1.0 providers (file / unknown: max possible weight
+# 1.0) however confident (ACE-001), and any low-confidence candidate (e.g.
+# filename 4.0 x 0.25 = 1.0, wikipedia 5.0 x 0.2 = 1.0) also fails the strict
+# boundary (ACE-002).  Legacy Feed objects (no confidence) keep the raw matrix
+# weight and skip the confidence gate.
+MIN_EXPENSIVE_SINGLE_EFFECTIVE = 1.1
+
+# A lone expensive vote also requires the winning providers to *themselves*
+# be confident (>= 0.6), not just have a favourable base x conf product.
+MIN_EXPENSIVE_SINGLE_CONFIDENCE = 0.6
 
 # Title similarity threshold for cross-provider agreement.
 TITLE_MATCH_RATIO = 0.85
@@ -158,6 +163,23 @@ def _effective_weight(feed, field: str, weights: Dict[str, float]) -> float:
     fields = getattr(feed, 'fields', None)
     conf = fields[field].confidence if fields and field in fields else None
     return base * conf if conf is not None else base
+
+
+def _max_provider_confidence(feeds, field: str, providers: List[str]) -> float:
+    """Highest self-reported confidence among the winning providers.
+
+    Legacy Feed objects carry no confidence → return 1.0 so they pass the
+    gate unchanged (their trust lives in the base matrix weight).
+    """
+    best = None
+    for feed in feeds:
+        if feed.abstain or feed.provider not in providers:
+            continue
+        fields = getattr(feed, 'fields', None)
+        c = fields[field].confidence if fields and field in fields else None
+        if c is not None and (best is None or c > best):
+            best = c
+    return best if best is not None else 1.0
 
 
 # ── Clustering ───────────────────────────────────────────────────────────────
@@ -263,12 +285,17 @@ def _verdict_for(feeds: List[Feed], field: str, scores: Scores) -> Optional[Verd
         # winner is not trustworthy enough for expensive fields → refuse.
         elif by_priority:
             decision = 'skip'
-        # One provider, no opposition, and a strong enough *effective* weight
-        # (base x confidence) from a source that can know the season
-        # (filename / online / dir) → accept.  A base-1.0 provider (file /
-        # unknown) can never reach the floor, and a low-confidence guess is
-        # refused.  Legacy Feeds keep their raw matrix weight.
-        elif win_n == 1 and total == win_score                 and win_score >= MIN_EXPENSIVE_SINGLE_EFFECTIVE:
+        # One provider, no opposition, and the winning signal clears both
+        # gates: effective weight strictly above the floor (base-1.0 providers
+        # never reach 1.1) AND a decent self-confidence (ACE-002).  A low
+        # confidence guess (filename 4.0 x 0.25 = 1.0) and a perfectly
+        # confident base-1 provider (file x 1.0 = 1.0) both fail the strict
+        # boundary.  Legacy Feeds keep their raw matrix weight and pass the
+        # confidence gate (no confidence → 1.0).
+        elif (win_n == 1 and total == win_score
+              and win_score > MIN_EXPENSIVE_SINGLE_EFFECTIVE
+              and _max_provider_confidence(feeds, field, win['providers'])
+              >= MIN_EXPENSIVE_SINGLE_CONFIDENCE):
             decision = 'accept'
         else:
             decision = 'skip'

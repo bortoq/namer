@@ -143,3 +143,48 @@ class TestConfidenceValidation:
         b = ProviderOpinion('dirname');  b.set('season', 1, 0.8)
         v = fuse([a, b])['season']
         assert 0.0 <= v.confidence <= 1.0
+
+
+class TestExpensiveSafeGate:
+    """Regression for audit ACE-001/ACE-002.  A lone expensive-field vote only
+    passes when the effective weight is *strictly* above the floor AND the
+    winning provider's own confidence is high enough.  This stops a base-1.0
+    provider (conf 1.0) and a low-confidence high-base provider from being
+    single-handedly usable for season/episode."""
+
+    @pytest.mark.parametrize('provider', ['file', 'unknown'])
+    def test_base_one_provider_at_confidence_one_cannot_accept_lone_expensive(
+            self, provider):
+        op = ProviderOpinion(provider)
+        op.set('season', 7, 1.0)
+        v = vote([op])['season']
+        assert v.decision == 'skip'
+        assert not v.usable
+
+    @pytest.mark.parametrize('provider,conf', [
+        ('filename', 0.25),
+        ('wikipedia', 0.20),
+        ('tvmaze', 0.20),
+        ('tmdb', 0.20),
+    ])
+    def test_low_self_confidence_expensive_field_not_usable(self, provider, conf):
+        op = ProviderOpinion(provider)
+        op.set('season', 1, conf)
+        v = fuse([op])['season']
+        assert v.confidence < 0.6
+        assert not v.usable
+
+    def test_confident_dirname_and_filename_still_usable(self):
+        for provider, conf in [('filename', 0.9), ('dirname', 0.8)]:
+            op = ProviderOpinion(provider)
+            op.set('season', 1, conf)
+            v = fuse([op])['season']
+            assert v.usable
+
+    def test_assumed_filename_alone_still_usable(self):
+        # 4.0 x 0.6 x 0.5 = 1.2 > 1.1, conf 0.6 >= 0.6 -> usable
+        op = ProviderOpinion('filename')
+        op.set('season', 3, 0.6)
+        op.meta['season_assumed'] = True
+        v = fuse([op])['season']
+        assert v.usable
