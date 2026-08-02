@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 from namer.voting import Verdict, Feed
 from namer.voting import FIELD_WEIGHTS, EXPENSIVE_FIELDS
 from namer.voting import _group_feeds, _sort_key, _verdict_for, update_scores
-from namer.voting import _mean_provider_confidence
+from namer.voting import provider_confidence_mean
 
 # Re-exported: fusion is the arbitration entry point but keeps the same
 # success-score tracking and the Scores type as voting.
@@ -49,7 +49,7 @@ def _posterior_for(feeds, field, scores) -> float:
         return 0.0
     groups.sort(key=_sort_key(field, weights, scores))
     win = groups[0]
-    avg_conf = _mean_provider_confidence(feeds, field, win["providers"])
+    avg_conf = provider_confidence_mean(feeds, field, win["providers"])
     total = sum(g['score'] for g in groups) or 1.0
     share = win['score'] / total
     certainty = avg_conf

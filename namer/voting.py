@@ -191,14 +191,19 @@ def _max_provider_confidence(feeds, field: str, providers: List[str]) -> float:
     return best if best is not None else 1.0
 
 
-def _mean_provider_confidence(feeds, field: str, providers: List[str]) -> float:
+def provider_confidence_mean(feeds, field: str, providers: List[str]) -> float:
     """Mean self-reported confidence across the winning providers.
 
     Single source of truth used by BOTH the expensive-consensus decision gate
-    (voting._verdict_for) and the posterior (fusion._posterior_fore), so the
+    (voting._verdict_for) and the posterior (fusion._posterior_for), so the
     invariant "season/ep usable ⇒ fuse().confidence >= 0.6" cannot drift
-    (36D-001).  Legacy Feed objects carry no confidence → a neutral 1.0, i.e.
-    their raw matrix weight decides, preserving backward compatibility.
+    (36D-001).
+
+    Legacy Feed objects carry no confidence.  In an *all-legacy* winning
+    cluster they contribute nothing to the mean, so a neutral 1.0 is returned.
+    In a *mixed* cluster (legacy + ProviderOpinion) only the explicit
+    confidences are averaged — legacy members do not inject a synthetic 1.0,
+    which keeps the gate safety-conservative rather than inflating the mean.
     """
     confs = []
     for feed in feeds:
@@ -313,7 +318,7 @@ def _verdict_for(feeds: List[Feed], field: str, scores: Scores) -> Optional[Verd
         # providers agreeing at confidence 0.01 must not make an expensive
         # field usable).
         if (win_n >= 2 and win_score > run_score
-                and ratio * _mean_provider_confidence(feeds, field, win['providers'])
+                and ratio * provider_confidence_mean(feeds, field, win['providers'])
                 >= MIN_EXPENSIVE_CONSENSUS_CONFIDENCE):
             decision = 'accept'
         # Equal-strength camps → a real conflict; even the priority matrix
