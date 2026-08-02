@@ -30,19 +30,45 @@ Scores = dict
 def _posterior_for(feeds, field, scores) -> float:
     """Posterior probability the winning value is correct.
 
-    The winner's cluster score is the evidence mass *for* its value and the
-    runner-up is evidence *against*.  The posterior is the winning share of
-    the total score, so an uncontested single/agreeing cluster maps to ~1.0
-    and an even split collapses toward 0.5.
+    Two factors, combined as a simple product:
+
+      * ``share`` — the winner's evidence share of all scored evidence (how
+        dominant the winner is vs any runner-up), in [0, 1];
+      * ``certainty`` — the average self-reported confidence of the winning
+        providers.  A sole candidate with confidence ~0 has near-zero
+        certainty, so an uncontested *low-confidence* candidate no longer
+        maps to 1.0 (audit 943-001).
+
+    The product keeps an agreed, high-confidence consensus near 1.0 while a
+    real conflict collapses toward 0.5 and a lone weak vote stays low.
     """
     weights = FIELD_WEIGHTS.get(field, {})
     groups = _group_feeds(feeds, field, weights)
     if not groups:
         return 0.0
     groups.sort(key=_sort_key(field, weights, scores))
+    win = groups[0]
+    avg_conf = _mean_provider_confidence(feeds, field, win["providers"])
     total = sum(g['score'] for g in groups) or 1.0
-    share = groups[0]['score'] / total
-    return share if share <= 1.0 else 0.999
+    share = win['score'] / total
+    certainty = avg_conf
+    posterior = share * certainty
+    return min(posterior, 0.999)
+
+
+def _mean_provider_confidence(feeds, field, providers) -> float:
+    """Mean confidence across the winning providers for *field* (0.5 fallback)."""
+    confs = []
+    for feed in feeds:
+        if feed.abstain or feed.provider not in providers:
+            continue
+        fields_ = getattr(feed, 'fields', None)
+        c = fields_[field].confidence if fields_ and field in fields_ else None
+        if c is not None:
+            confs.append(c)
+    if not confs:
+        return 0.5  # legacy Feed: no confidence signal
+    return sum(confs) / len(confs)
 
 
 def fuse(feeds: List[Feed], scores: Optional[Dict] = None) -> Dict[str, Verdict]:

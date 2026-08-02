@@ -48,6 +48,13 @@ FIELD_WEIGHTS: Dict[str, Dict[str, float]] = {
 # Fields where a wrong guess is expensive → refuse unless the winner is solid.
 EXPENSIVE_FIELDS = frozenset({'season', 'episode'})
 
+# A lone vote on an expensive field is only accepted when its *effective*
+# weight (base x confidence) is high enough.  filename base 4.0 x 0.9 = 3.6
+# is an explicit confident filename; a low/zero-confidence candidate (e.g.
+# 4.0 x 0.1 = 0.4) is refused.  The 2.0 floor keeps legacy weak/assumed
+# filename (4.0 x 0.5 = 2.0) and explicit dirname (2.0) accepted.
+MIN_EXPENSIVE_SINGLE_EFFECTIVE = 2.0
+
 # Title similarity threshold for cross-provider agreement.
 TITLE_MATCH_RATIO = 0.85
 # A provider whose value came from a weak fallback (assumed season) votes
@@ -149,6 +156,26 @@ def _effective_weight(feed, field: str, weights: Dict[str, float]) -> float:
     return base * conf if conf is not None else base
 
 
+# A lone expensive-field vote is only accepted when its provider reports a
+# minimum confidence (audit 943-001).  Legacy Feed carries no confidence → fall
+# back to the base-priority rule so old behaviour is unchanged.
+MIN_EXPENSIVE_SINGLE_CONFIDENCE = 0.6
+
+def _lone_expensive_confident(feeds, field: str, providers: List[str]) -> bool:
+    confs = []
+    for feed in feeds:
+        if feed.abstain or feed.provider not in providers:
+            continue
+        fields = getattr(feed, 'fields', None)
+        c = fields[field].confidence if fields and field in fields else None
+        if c is not None:
+            confs.append(c)
+    if confs:
+        return max(confs) >= MIN_EXPENSIVE_SINGLE_CONFIDENCE
+    # legacy Feed: rely on effective score (base x no-confidence) already
+    return True
+
+
 # ── Clustering ───────────────────────────────────────────────────────────────
 
 def _group_feeds(feeds: List[Feed], field: str,
@@ -242,7 +269,6 @@ def _verdict_for(feeds: List[Feed], field: str, scores: Scores) -> Optional[Verd
     ratio = win_score / total if total > 0 else 0.0
     win_n = len(win['providers'])
     by_priority = runner is not None and abs(win_score - run_score) < 1e-9
-    max_w = max(weights.get(p, 0.0) for p in win['providers'])
     expensive = field in EXPENSIVE_FIELDS
 
     if expensive:
@@ -256,7 +282,8 @@ def _verdict_for(feeds: List[Feed], field: str, scores: Scores) -> Optional[Verd
         # One provider, no opposition, and an explicit (non-assumed) signal
         # from a source that can know the season (filename / online / dir) →
         # accept.  Weak assumed values also pass here (no better signal).
-        elif win_n == 1 and max_w >= 2.0 and total == win_score:
+        elif (win_n == 1 and total == win_score
+              and _lone_expensive_confident(feeds, field, win['providers'])):
             decision = 'accept'
         else:
             decision = 'skip'
