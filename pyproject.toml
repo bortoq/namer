@@ -14,7 +14,7 @@ requires-python = ">=3.10"
 namer = "namer.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["namer*"]
+include = ["namer*", "videolib*"]
 
 [tool.pytest.ini_options]
 markers = ["live: tests that require live network providers (Wikipedia/TVmaze/TMDB)"]

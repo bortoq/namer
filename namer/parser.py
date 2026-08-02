@@ -536,6 +536,8 @@ def extract_ep_title_from_filename(file_name: str) -> str:
         s = _SOURCE_TOKENS.sub('', s)
         s = re.sub(r'\[.*?\]', '', s)
         s = re.sub(r'\(.*?\)', '', s)
+        # A leading 4-digit year (release date) is not part of an ep title.
+        s = re.sub(r'^[\s._-]*(?:19|20)\d{2}\b[\s._-]*', '', s)
         # Preserve leading triple-dot ellipsis (part of episode title)
         # Replace internal dots/dashes with spaces, but NOT leading ...
         if s.startswith('...'):
@@ -594,6 +596,12 @@ def parse_file(file_path: str) -> dict:
     # Dot-quality: quality label with dots instead of spaces (torrent-style)
     dot_quality = re.sub(r'\s+', '.', quality_label.strip())
 
+    # ep_title is filled from the filename (single source of truth:
+    # one function name -> {field: value}).  It is only the *initial* value;
+    # online providers (wikipedia/tvmaze/tmdb) may override it with a localized
+    # title via the L3 voting/fusion step.
+    filename_ep = extract_ep_title_from_filename(basename)
+
     return {
         'title': title,
         'dot_title': dot_title,
@@ -612,7 +620,7 @@ def parse_file(file_path: str) -> dict:
         'hdr': q.get('hdr') or '',
         'mod': q.get('mod') or '',
         'group': '',
-        'ep_title': '',
+        'ep_title': filename_ep,
         'is_series': season is not None,
         'is_multi_episode': ide.is_multi_episode_value,
     }

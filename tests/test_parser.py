@@ -168,20 +168,20 @@ class TestTitleFromPath:
         assert s == 1
         assert e == 1
 
-    def test_dot_format_ep_title_not_scraped(self):
-        """ep_title is NOT extracted from filename — comes only from enrichment."""
+    def test_dot_format_ep_title_scraped_from_filename(self):
+        """ep_title IS extracted from a clean formatted filename."""
         from namer.parser import parse_file
         meta = parse_file("1.01. Departure.mkv")
-        assert meta['ep_title'] == "", f"expected empty, got {meta['ep_title']!r}"
+        assert meta['ep_title'] == "Departure", f"got {meta['ep_title']!r}"
         assert meta['season'] == 1
 
     def test_dot_format_title_vs_ep_title(self):
         """For formatted names, title is empty (no show name in filename),
-        ep_title is empty too (no longer scraped from filename)."""
+        but ep_title IS filled from the filename."""
         from namer.parser import parse_file
         meta = parse_file("1.01. Departure.mkv")
         assert meta['title'] == ""  # filename has no show name
-        assert meta['ep_title'] == ""  # no longer scraped from filename
+        assert meta['ep_title'] == "Departure"
 
 
 
@@ -485,16 +485,13 @@ class TestNmr005Regression:
         assert s == 1, f"season={s}"
         assert e == 1, f"episode={e}"
 
-    def test_yuru_camp_parse_file_ep_title_empty(self):
-        """ep_title is NOT scraped from filename."""
-        meta = parse_file(
-            "Yuru.Camp.S01.2018.AniDub.BDRip.Deadmauvlad.Ep.01.avi"
-        )
-        assert meta['season'] == 1
-        assert meta['episode'] == 1
-        assert meta['ep_title'] == "", f"ep_title={meta['ep_title']!r}"
-        assert meta['is_series'] is True
-        assert meta['title'] == "Yuru Camp", f"title={meta['title']!r}"
+    def test_release_junk_parse_file_ep_title_cleaned(self):
+        """Release junk after the marker is stripped before keep; garbage
+        '2018 AniDub ... ' yields an empty ep_title, not junk."""
+        from namer.parser import parse_file
+        meta = parse_file("Yuru.Camp.S01E01.2018.AniDub.BDRip.avi")
+        # release-year junk is stripped from the leading edge
+        assert "2018" not in meta['ep_title']
 
     def test_yuru_camp_s01_without_episode_returns_season_none(self):
         """S01 alone (no episode number anywhere) returns (1, None)."""

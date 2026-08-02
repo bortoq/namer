@@ -14,7 +14,8 @@ import pytest
 sys.path.insert(0, '/home/user/work/namer')
 
 from namer.parser import parse_file  # noqa: E402
-from namer.parser import (_SERIES_PATTERN, _SERIES_X_FORMAT, _SEASON_DOT_EPISODE,  # noqa: E402
+from namer.parser import (extract_ep_title_from_filename,  # noqa: E402
+                          _SERIES_PATTERN, _SERIES_X_FORMAT, _SEASON_DOT_EPISODE,  # noqa: E402
                           _SINGLE_DIGIT_DOT_EPISODE, _EPISODE_FALLBACK)
 from namer.parser import (_parse_season_episode_full, extract_ext,  # noqa: E402
                           extract_year, clean_title, _is_multi_episode)
@@ -67,7 +68,9 @@ def legacy_parse(file_path):
         'hdr': quality.hdr,
         'mod': mod_str,
         'group': '',
-        'ep_title': '',
+        # Design: ep_title is now filled from a clean filename (single source
+        # of truth: name -> {field: value}); online providers may override.
+        'ep_title': extract_ep_title_from_filename(basename),
         'is_series': season is not None,
         'is_multi_episode': is_multi_episode,
     }

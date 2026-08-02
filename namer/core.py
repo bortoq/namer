@@ -247,6 +247,7 @@ def generate_new_name(
             meta[f] = verdict.value
     if meta.get('title'):
         meta['dot_title'] = re.sub(r'\s+', '.', str(meta['title']).strip())
+
     # ── Choose template ─────────────────────────────────────────────
     basename = os.path.basename(file_path)
 
@@ -260,6 +261,20 @@ def generate_new_name(
             template = pattern
     else:
         template = TEMPLATE_SERIES if meta.get('is_series') else TEMPLATE_MOVIE
+
+    # ── ep_title local fallback ──────────────────────────────────────
+    # A series file often already carries a clean episode title in its own
+    # name ("01.01. Pilot.mkv" -> "Pilot").  Online providers (wikipedia /
+    # tvmaze) may be unreachable, lack localized episode data, or the file
+    # simply predates them — in that case a *clean* filename ep_title is far
+    # better than refusing to rename at all.  extract_ep_title_from_filename
+    # strips release tokens / containers and returns '' for garbage (AniDub,
+    # BDRip, ...), so we never fabricate a title where the filename is junk.
+    if not meta.get('ep_title') and _template_uses(template, 'ep_title'):
+        from namer.parser import extract_ep_title_from_filename
+        fn_ep = extract_ep_title_from_filename(basename)
+        if fn_ep:
+            meta['ep_title'] = fn_ep
 
     # ── Validation: skip if metadata too incomplete or disputed ─────
     if not meta.get('title') or len(meta['title']) < 2:

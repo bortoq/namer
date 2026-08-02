@@ -171,11 +171,42 @@ class TestEpTitleEnrichment:
         assert meta['ep_title'] == ""
         assert name == "XyzzyNoMatch.S01E02.mkv", f"expected skip, got {name!r}"
 
-    def test_ep_title_not_scraped_from_filename(self):
-        """parse_file does NOT extract ep_title from filename."""
+    def test_ep_title_scraped_from_filename_by_default(self):
+        """parse_file DOES extract ep_title from a clean filename."""
         from namer.parser import parse_file
         meta = parse_file("1.01. Some Episode Title.mkv")
-        assert meta['ep_title'] == "", f"ep_title={meta['ep_title']!r}"
+        assert meta['ep_title'] == "Some Episode Title", f"ep_title={meta['ep_title']!r}"
+
+    def test_clean_filename_ep_title_used_when_no_online(self):
+        """Regression: an offline/ лок.–provider-missing series file with a clean
+        'NN.NN. Title' name is renamed (using its own ep_title) instead of being
+        skipped, even though online enrichment sets nothing."""
+        name, meta = generate_new_name(
+            "Show.S01E01 Pilot.mkv",
+            pattern="{season:02d}.{episode:02d}. {ep_title}.{ext}"
+        )
+        # No network → online providers abstain; the fallback keeps the title.
+        assert meta['ep_title'] != ""
+        assert "Pilot" in meta['ep_title']
+        assert name == "01.01. Pilot.mkv"
+
+    def test_clean_dot_ep_title_fallback(self):
+        """Dot-N.N.N format: the after-marker text becomes the ep_title."""
+        name, meta = generate_new_name(
+            "Dir.Show.S01E01 legitimate.mkv",
+            pattern="{ep_title}.{ext}"
+        )
+        assert "legitimate" in meta['ep_title']
+        assert meta['ep_title'] != ""
+
+    def test_no_filename_ep_title_still_skips(self):
+        """When the filename carries NO ep title and online is off, we still
+        skip (no fabricated title)."""
+        _, meta = generate_new_name(
+            "Show.S01E01.mkv",
+            pattern="{season:02d}.{episode:02d}. {ep_title}.{ext}"
+        )
+        assert meta['ep_title'] == ""
 
 class TestDirectoryHeuristics:
     """Tests for directory-based title/season detection."""
