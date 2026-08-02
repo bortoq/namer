@@ -60,13 +60,19 @@ def _episode_from_marker(marker: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def _second_episode_after_marker(rest: str, first_episode: int) -> bool:
+def _episode_number_from_marker(marker: str) -> int:
+    """Episode number inside a second marker ('.S01E01' -> 1, '1x02' -> 2, 'E03' -> 3)."""
+    m = re.search(r'(?:s\d{1,2}e|e|x)(\d{1,3})', marker)
+    return int(m.group(1)) if m else 0
+
+
+def _second_episode_after_marker(rest: str, first_episode: int) -> Optional[int]:
     """Inspect the substring after a primary episode marker.
 
     *rest* is the lowercased basename remainder following the marker; the
-    *first_episode* number comes from the marker itself.  True when the
-    nearest tokens describe a second episode rather than a numeric episode
-    title or a quality/audio/video token.
+    *first_episode* number comes from the marker itself.  Returns the second
+    episode number when the nearest tokens describe a second episode, else
+    None (numeric episode title or a quality/audio/video token).
     """
     # Normalize the word separator 'and' to '&' first, so the leading
     # separator run (and its length) is consistent.
@@ -76,37 +82,38 @@ def _second_episode_after_marker(rest: str, first_episode: int) -> bool:
     rest = rest[len(sep):]
     # Second full marker: SxxExx / NxNN / bare E-number (E02).  The E-number
     # branch also covers adjacent E-numbers ("S01E01E02" -> remainder "E02").
-    if re.match(r'(?:s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3}|e\d{1,3})(?![0-9])', rest):
-        return True
+    fm = re.match(r'((?:s\d{1,2}e|\d{1,2}x|e)\d{1,3})(?![0-9])', rest)
+    if fm:
+        return _episode_number_from_marker(fm.group(1))
     m = re.match(r'(\d{1,4})', rest)
     if not m:
-        return False
+        return None
     num = m.group(1)
     after = rest[m.end():]
     # Decimal audio channels: 5.1 / 7.1 / 2.0 - number followed by ".digit".
     if re.match(r'\.\d', after):
-        return False
+        return None
     # Technical token: number continued by '-', ' ' or '.' to a unit word
     # (10-bit, 10 bit, 60 fps, 24 fps, 10bit, 24fps).
     if _TECH_NUMBER_UNITS.match(after):
-        return False
+        return None
     # Resolution widths, years and other 4-digit numbers are not episodes.
     if num in _RESOLUTION_WIDTHS or len(num) >= 4:
-        return False
+        return None
     # A bare number is a second episode only when (a) it follows a range
-    # separator ('-', '+', '&', 'and', or '_' which commonly replaces a dash
+    # separator ('-', '+', '&', 'and', or '_' which commonly replaces a dash)
     # in ranges like "S01E01_02") and (b) it is close to the first episode.
     # An arbitrary number ("S01E01-33", "S03E07-42") is a numeric episode
     # title, not a range; dot/space separators stay ambiguous (single).
     if not any(c in sep for c in '-+&_'):
-        return False
+        return None
     try:
         second = int(num)
     except ValueError:
-        return False
+        return None
     if second <= first_episode or second - first_episode > _MAX_RANGE_GAP:
-        return False
-    return True
+        return None
+    return second
 
 
 def _is_multi_episode(file_name: str) -> bool:
@@ -124,9 +131,30 @@ def _is_multi_episode(file_name: str) -> bool:
     for m in re.finditer(
             r'(?:^|[.\s\-_+&,])+(?:s\d{1,2}e\d{1,3}|\d{1,2}x\d{2,3})', lower):
         first_episode = _episode_from_marker(m.group(0))
-        if _second_episode_after_marker(lower[m.end():], first_episode):
+        if _second_episode_after_marker(lower[m.end():], first_episode) is not None:
             return True
     return False
+
+
+def series_episode_numbers(file_name: str) -> tuple:
+    """Return the episode numbers of *file_name*.
+
+    Single episode -> ``(episode,)``; multi-episode -> ``(first, second)``;
+    empty tuple when no episode can be resolved.
+    """
+    base = _strip_video_extension(file_name)
+    if base:
+        lower = base.lower()
+        for m in re.finditer(
+                r'(?:^|[.\s\-_+&,])+(?:s\d{1,2}e\d{1,3}|\d{1,2}x\d{2,3})', lower):
+            first_episode = _episode_from_marker(m.group(0))
+            second = _second_episode_after_marker(lower[m.end():], first_episode)
+            if second is not None:
+                return (first_episode, second)
+    _, episode, _ = _parse_season_episode_full(file_name)
+    if episode is not None:
+        return (episode,)
+    return ()
 
 # Fallback: standalone episode number like " - 01" (common anime format)
 #   Matches 2-3 digit number before quality bracket, end of name, or extension.
