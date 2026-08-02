@@ -178,7 +178,8 @@ def generate_new_name(
         if progress is not None:
             progress.set_action('querying providers')
         try:
-            from namer.wikipedia import enrich_title_via_wiki, is_valid_language, _detect_language
+            from namer.wikipedia import enrich_title_via_wiki
+            from namer.language import is_valid_language, detect_language as _detect_language
             if not is_valid_language(language):
                 print(f'error: unknown language code {language!r}.', file=sys.stderr)
                 meta["_skip"] = True

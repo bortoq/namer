@@ -105,7 +105,7 @@ def main(argv: list = None) -> int:
                 return 1
 
     # Validate language code against known Wikipedia languages
-    from namer.wikipedia import is_valid_language
+    from namer.language import is_valid_language
     if not is_valid_language(args.language):
         print(
             f'error: unknown language code {args.language!r}. '
