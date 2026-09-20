@@ -96,6 +96,7 @@ def _format_template(template: str, meta: dict) -> str:
 def generate_new_name(
     file_path: str,
     known_title: str = '',
+    known_author: str = '',
     pattern: str = '',
     tmdb_key: str = '',
     season_number: int = 0,
@@ -123,7 +124,35 @@ def generate_new_name(
 
     Returns:
         ``(new_basename, metadata_dict)``
+    Book files (fb2/fb2.zip/epub/pdf/djvu) are delegated to the isolated
+    ``namer.books`` domain; the returned meta dict carries the same
+    ``_skip``/``title``/``is_series`` keys so pass 2 below works unchanged.
+
+    Args:
+        known_author: book author override (books only; ignored for video).
     """
+    try:
+        from namer.books import is_book_path
+    except Exception:
+        is_book_path = lambda p: False  # noqa: E731
+    if is_book_path(file_path):
+        from namer.books.naming import generate_book_name as _generate_book_name
+        new_base, ident = _generate_book_name(
+            file_path, pattern=pattern,
+            known_title=known_title, known_author=known_author)
+        if progress is not None:
+            progress.set_action('rendering')
+        meta = {
+            'title': ident.title,
+            'is_series': False,
+            'season': None,
+            'episode': None,
+            'ext': ident.ext,
+            '_skip': not ident.usable,
+            '_skip_reason': '; '.join(ident.warnings) or 'unresolved book metadata',
+            '_book_identity': ident,
+        }
+        return new_base, meta
     from namer.fusion import fuse, update_scores, Scores
 
     if progress is not None:
@@ -132,6 +161,11 @@ def generate_new_name(
     meta['_skip'] = False
     meta['_language_explicit'] = language_explicit
     meta['_title_enriched'] = False
+    # Where the final title came from: online lookup ('online'), explicit
+    # user override ('known'), directory name ('dir'), wikipedia translation
+    # ('wiki') or the parsed filename hint ('hint').  The filename parse is
+    # only ever a hint — it is not voted on by the local providers.
+    meta['_title_source'] = 'hint'
 
     # ── Multi-episode file (S01E01E02): cannot be represented by a single
     # rename target — skip safely instead of renaming to the first episode.
@@ -153,6 +187,7 @@ def generate_new_name(
         meta['title'] = known_title
         meta['dot_title'] = re.sub(r'\s+', '.', known_title.strip())
         meta['_title_enriched'] = True
+        meta['_title_source'] = 'known'
 
     # ep_title is NOT scraped from filename — comes only from enrichment (voting)
 
@@ -171,6 +206,7 @@ def generate_new_name(
                         and len(dir_title) < len(fn_title))):
                 meta['title'] = dir_title
                 meta['dot_title'] = re.sub(r'\s+', '.', dir_title.strip())
+                meta['_title_source'] = 'dir'
 
     # ── Language validation + Wikipedia title translation ──────────────
     # Runs before the feeds so the corrected title helps online lookups.
@@ -187,6 +223,7 @@ def generate_new_name(
             wiki_ok = enrich_title_via_wiki(meta, language)
             if wiki_ok:
                 meta['_title_enriched'] = True
+                meta['_title_source'] = 'wiki'
             if not wiki_ok and meta.get("_language_explicit"):
                 source = _detect_language(meta.get("title", "") or "")
                 if source and source != language:
@@ -242,11 +279,23 @@ def generate_new_name(
     update_scores(scores, all_feeds, v)
 
     # Apply usable verdicts (accept + guess) to the metadata dict.
+    # An explicit user title (-t) is authoritative: online verdicts never
+    # override it.
+    title_pinned = bool(known_title)
     for f, verdict in v.items():
         if verdict.usable and f not in ('season', 'episode'):
+            if f == 'title' and title_pinned:
+                continue
             meta[f] = verdict.value
     if meta.get('title'):
         meta['dot_title'] = re.sub(r'\s+', '.', str(meta['title']).strip())
+    # Title provenance: only online providers vote on the title now, so a
+    # usable verdict means the canonical name came from a lookup.
+    title_v = v.get('title')
+    if title_v is not None and title_v.usable and not title_pinned:
+        meta['_title_source'] = (
+            'online' if set(title_v.providers) & {'wikipedia', 'tvmaze', 'tmdb'}
+            else 'local')
 
     # ── Choose template ─────────────────────────────────────────────
     basename = os.path.basename(file_path)
@@ -471,6 +520,7 @@ def rename_file(
 def process_directory(
     directory: str,
     known_title: str = '',
+    known_author: str = '',
     pattern: str = '',
     tmdb_key: str = '',
     season_number: int = 0,
@@ -507,6 +557,13 @@ def process_directory(
         return 0, 0, 0
 
     files = find_video_files(directory, recursive=recursive)
+    # Books ride along the same batch: identical progress/rename machinery,
+    # identification delegated per-file in generate_new_name.
+    try:
+        from namer.books.detect import find_book_files
+        files = sorted(files + find_book_files(directory, recursive=recursive))
+    except Exception:
+        pass
     if not files:
         print('No video files found.')
         return 0, 0, 0
@@ -531,6 +588,7 @@ def process_directory(
             new_name, meta = generate_new_name(
                 fpath,
                 known_title=known_title,
+                known_author=known_author,
                 pattern=pattern,
                 tmdb_key=tmdb_key,
                 season_number=season_number,

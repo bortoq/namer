@@ -12,7 +12,7 @@ from namer.core import process_directory
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog='namer',
-        description='Rename video/series files using metadata from filenames.',
+        description='Rename video/series files and books (fb2/epub/pdf/djvu) using metadata.',
         epilog=(
             'Examples:\n'
             '  namer                                    # rename all videos in current dir\n'
@@ -39,6 +39,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         '-sn', '--season-number', type=int, default=0,
         help='Explicit season number (overrides auto-detection; marks the file as a series)',
+    )
+    p.add_argument(
+        '-a', '--author', default='', metavar='AUTHOR',
+        help='Book author name (overrides auto-detection for book files)',
     )
     p.add_argument(
         '-p', '--pattern', default='',
@@ -129,6 +133,7 @@ def main(argv: list = None) -> int:
         renamed, total, errors = process_directory(
             directory=directory,
             known_title=known,
+            known_author=args.author.strip(),
             pattern=args.pattern,
             tmdb_key=args.tmdb_key,
             season_number=args.season_number,
