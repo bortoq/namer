@@ -5,7 +5,12 @@ import os
 import re
 from typing import Optional
 
-BOOK_EXTENSIONS = frozenset({'.fb2', '.fb2.zip', '.epub', '.pdf', '.djvu'})
+from namer.settings import BOOK_EXTENSIONS
+
+# Re-exported: single source lives in namer/settings.py (config.ini).
+__all__ = ['BOOK_EXTENSIONS', 'book_kind', 'find_book_files',
+           'find_isbns_in_text', 'is_book_path', 'is_garbage_text',
+           'normalize_isbn']
 
 _SINGLE_EXT_KIND = {
     '.fb2': 'fb2',

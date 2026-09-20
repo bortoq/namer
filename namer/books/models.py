@@ -11,14 +11,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from namer.settings import (
+    BOOK_MAX_ENTRIES,
+    BOOK_MAX_UNCOMPRESSED_MB,
+    BOOK_MAX_XML_KB,
+    BOOK_TIMEOUT_SEC,
+)
+
 
 @dataclass(frozen=True)
 class ReadBudget:
     """Safety limits for archive/binary parsing (zip-bomb, XML-bomb)."""
-    max_uncompressed: int = 16 * 1024 * 1024
-    max_entries: int = 512
-    max_xml_bytes: int = 2 * 1024 * 1024
-    timeout_sec: float = 5.0
+    max_uncompressed: int = BOOK_MAX_UNCOMPRESSED_MB * 1024 * 1024
+    max_entries: int = BOOK_MAX_ENTRIES
+    max_xml_bytes: int = BOOK_MAX_XML_KB * 1024
+    timeout_sec: float = BOOK_TIMEOUT_SEC
 
 
 @dataclass(frozen=True)

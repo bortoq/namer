@@ -9,9 +9,7 @@ from typing import Optional
 from namer.books.fusion import fuse_opinions
 from namer.books.identify import identify_book
 from namer.books.models import BookIdentity, BookRecord
-
-TEMPLATE_BOOK = '{author} - {title} ({year}).{ext}'
-TEMPLATE_BOOK_SERIES = '{author} - {series} - {series_index:02d} - {title}.{ext}'
+from namer.settings import TEMPLATE_BOOK, TEMPLATE_BOOK_SERIES
 
 _BOOK_FIELDS = frozenset({
     'author', 'authors', 'title', 'series', 'series_index',
