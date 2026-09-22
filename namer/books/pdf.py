@@ -5,6 +5,8 @@ import json
 import os
 import re
 import subprocess
+import shutil
+import tempfile
 import urllib.request
 import uuid
 from io import BytesIO
@@ -200,6 +202,23 @@ def _try_pdftotext(path: str) -> str:
 def _first_pages_pdf(path: str, pages: int = 3) -> bytes:
     """Build a small PDF containing only the first *pages* pages."""
     try:
+        # OCR.space's free endpoint has a 1 MiB file limit.  Rasterizing the
+        # first pages at its low-quality preset keeps scanned book covers
+        # comfortably below that limit without uploading the source PDF.
+        if shutil.which('gs'):
+            with tempfile.NamedTemporaryFile(suffix='.pdf') as tmp:
+                result = subprocess.run(
+                    ['gs', '-q', '-sDEVICE=pdfwrite',
+                     '-dCompatibilityLevel=1.4', '-dPDFSETTINGS=/screen',
+                     '-dNOPAUSE', '-dBATCH', '-dFirstPage=1',
+                     f'-dLastPage={pages}', f'-sOutputFile={tmp.name}', path],
+                    capture_output=True, timeout=60, check=False,
+                )
+                if result.returncode == 0:
+                    tmp.seek(0)
+                    compressed = tmp.read()
+                    if compressed:
+                        return compressed
         import importlib
         mod = importlib.import_module('pypdf')
         reader = mod.PdfReader(path)
@@ -247,13 +266,14 @@ def _try_ocr_space(path: str) -> str:
         if not content:
             return ''
         body, boundary = _multipart(
-            {'apikey': api_key, 'language': 'auto', 'OCREngine': '3',
+            {'language': 'auto', 'OCREngine': '3',
              'filetype': 'PDF', 'isOverlayRequired': 'false',
              'scale': 'true'},
             'file', content, 'first-pages.pdf', 'application/pdf')
         req = urllib.request.Request(
             'https://api.ocr.space/parse/image', data=body,
             headers={'Content-Type': f'multipart/form-data; boundary={boundary}',
+                     'apikey': api_key,
                      'User-Agent': 'namer/0.1'}, method='POST')
         with urllib.request.urlopen(req, timeout=90) as response:
             payload = response.read(2 * 1024 * 1024)
