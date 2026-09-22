@@ -1,6 +1,7 @@
 """PDF extractor -> BookQuery. Optional pypdf, else raw Info-scan. Never raises."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -287,6 +288,78 @@ def _try_ocr_space(path: str) -> str:
         return ''
 
 
+def _first_page_images(path: str, pages: int = 3) -> list:
+    """Render the first PDF pages as PNG bytes for Umi-OCR."""
+    try:
+        with tempfile.TemporaryDirectory(prefix='namer-umi-') as directory:
+            prefix = os.path.join(directory, 'page')
+            result = subprocess.run(
+                ['pdftoppm', '-f', '1', '-l', str(pages), '-r', '150',
+                 '-png', path, prefix],
+                capture_output=True, timeout=60, check=False,
+            )
+            if result.returncode != 0:
+                return []
+            images = []
+            for name in sorted(os.listdir(directory)):
+                if name.startswith('page-') and name.endswith('.png'):
+                    with open(os.path.join(directory, name), 'rb') as fh:
+                        images.append(fh.read())
+            return images[:pages]
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def _umi_language_options() -> list:
+    try:
+        req = urllib.request.Request('http://127.0.0.1:1224/api/ocr/get_options')
+        with urllib.request.urlopen(req, timeout=0.3) as response:
+            data = json.loads(response.read(256 * 1024).decode('utf-8', 'replace'))
+        option = data.get('ocr.language') if isinstance(data, dict) else None
+        return option.get('optionsList', []) if isinstance(option, dict) else []
+    except Exception:
+        return []
+
+
+def _try_umi_ocr(path: str) -> str:
+    """Use a locally running Umi-OCR HTTP server, if available."""
+    try:
+        language_options = _umi_language_options()
+        if not language_options:
+            return ''
+        images = _first_page_images(path, 3)
+        if not images:
+            return ''
+        language = ''
+        for item in language_options:
+            if isinstance(item, list) and len(item) >= 2:
+                value, label = str(item[0]), str(item[1])
+                if 'рус' in f'{value} {label}'.lower():
+                    language = value
+                    break
+        texts = []
+        for image in images:
+            options = {'data.format': 'text', 'tbpu.parser': 'single_para'}
+            if language:
+                options['ocr.language'] = language
+            payload = json.dumps({
+                'base64': base64.b64encode(image).decode('ascii'),
+                'options': options,
+            }).encode('utf-8')
+            req = urllib.request.Request(
+                'http://127.0.0.1:1224/api/ocr', data=payload,
+                headers={'Content-Type': 'application/json'}, method='POST')
+            with urllib.request.urlopen(req, timeout=30) as response:
+                result = json.loads(response.read(2 * 1024 * 1024).decode('utf-8', 'replace'))
+            if isinstance(result, dict) and result.get('code') == 100:
+                value = result.get('data', '')
+                if isinstance(value, str) and value.strip():
+                    texts.append(value)
+        return '\n'.join(texts)[:30000]
+    except Exception:
+        return ''
+
+
 def _text_title_authors(text: str) -> tuple:
     """Best-effort title/author from a text PDF's opening lines."""
     try:
@@ -342,6 +415,8 @@ def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQue
         info_title, info_author, head_text = _try_pypdf(path)
         if not head_text or not head_text.strip():
             head_text = _try_pdftotext(path)
+        if not head_text or not head_text.strip():
+            head_text = _try_umi_ocr(path)
         if not head_text or not head_text.strip():
             head_text = _try_ocr_space(path)
         text_hint = head_text if head_text and head_text.strip() else ''

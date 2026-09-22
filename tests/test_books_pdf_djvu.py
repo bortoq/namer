@@ -83,6 +83,32 @@ def test_pdf_ocr_replaces_filename_metadata(tmp_path, monkeypatch):
     assert q.authors_hint == ('Брайан Уорд',)
 
 
+def test_umi_ocr_local_http_adapter(monkeypatch):
+    import json
+    import namer.books.pdf as pdf
+
+    monkeypatch.setattr(pdf, '_first_page_images', lambda path, pages: [b'png'])
+    calls = []
+
+    class Response:
+        def __init__(self, data): self.data = data
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, _limit): return self.data
+
+    def fake_urlopen(request, timeout=0):
+        calls.append(request)
+        if request.full_url.endswith('get_options'):
+            return Response(b'{"ocr.language":{"optionsList":[["rus","Russian"]]}}')
+        return Response(json.dumps({
+            'code': 100, 'data': 'Внутреннее устройство Линукс',
+        }).encode())
+
+    monkeypatch.setattr(pdf.urllib.request, 'urlopen', fake_urlopen)
+    assert pdf._try_umi_ocr('scan.pdf') == 'Внутреннее устройство Линукс'
+    assert len(calls) == 2
+
+
 def test_pdf_edges():
     assert extract_pdf_query('').is_empty()
     assert extract_pdf_query(None).is_empty()
