@@ -313,6 +313,21 @@ def _text_title_authors(text: str) -> tuple:
         return '', ()
 
 
+def _metadata_title_is_placeholder(title: str, path: str) -> bool:
+    """Whether PDF metadata is just an export/file-name placeholder."""
+    try:
+        value = re.sub(r'[^a-zа-яё0-9]+', '', (title or '').lower())
+        if not value:
+            return True
+        stem = os.path.splitext(os.path.basename(path or ''))[0]
+        filename_value = re.sub(r'[^a-zа-яё0-9]+', '', stem.lower())
+        if value == filename_value:
+            return True
+        return value in {'titul', 'title', 'untitled', 'converted', 'scan', 'document'}
+    except Exception:
+        return False
+
+
 def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQuery:
     """PDF -> query. ISBN from text wins; Info/XMP only when human. Never raises."""
     try:
@@ -366,8 +381,10 @@ def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQue
         isbn = isbns[0] if isbns else ''
         title = '' if is_garbage_text(info_title or '') else (info_title or '').strip()[:300]
         authors = split_authors(info_author or '')
-        if not title and text_hint:
-            title, text_authors = _text_title_authors(text_hint)
+        if text_hint:
+            text_title, text_authors = _text_title_authors(text_hint)
+            if text_title and (not title or _metadata_title_is_placeholder(title, path)):
+                title = text_title
             if not authors:
                 authors = text_authors
         return BookQuery(
