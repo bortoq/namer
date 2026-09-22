@@ -39,6 +39,14 @@ def test_text_pdf_cover_author_before_title():
     assert authors == ('CHRISTOPHER W. TOTTEN',)
 
 
+def test_ocr_cover_skips_tagline_and_finds_author_below_title():
+    title, authors = _text_title_authors(
+        'для профессионалов\nВнутреннее устройство\nLINUX\nБрайан Уорд\n'
+    )
+    assert title == 'Внутреннее устройство Linux'
+    assert authors == ('Брайан Уорд',)
+
+
 def test_pdf_garbage_filtered(tmp_path):
     p = tmp_path / 'g.pdf'
     p.write_bytes(b'%PDF-1.4\n1 0 obj<</Title (Untitled)/Author (Microsoft Word)>>\n%%EOF')
@@ -64,7 +72,7 @@ def test_pdf_ocr_text_is_used_when_local_text_is_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(pdf, '_try_ocr_space',
                         lambda path: 'THE BOOK TITLE\nJane Author\n')
     q = extract_pdf_query(str(p))
-    assert q.title_hint == 'THE BOOK TITLE'
+    assert q.title_hint == 'The book title'
     assert q.authors_hint == ('Jane Author',)
 
 
@@ -107,6 +115,29 @@ def test_umi_ocr_local_http_adapter(monkeypatch):
     monkeypatch.setattr(pdf.urllib.request, 'urlopen', fake_urlopen)
     assert pdf._try_umi_ocr('scan.pdf') == 'Внутреннее устройство Линукс'
     assert len(calls) == 2
+
+
+def test_ocr_space_uses_public_demo_key_without_configuration(monkeypatch):
+    import namer.books.pdf as pdf
+
+    monkeypatch.delenv('NAMER_DISABLE_OCR', raising=False)
+    monkeypatch.delenv('OCR_SPACE_API_KEY', raising=False)
+    monkeypatch.setattr(pdf, '_first_pages_pdf', lambda path, pages: b'%PDF-mini')
+    seen = {}
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, _limit): return b'{"ParsedResults":[{"ParsedText":"Title"}]}'
+
+    def fake_urlopen(request, timeout=0):
+        headers = {k.lower(): v for k, v in request.header_items()}
+        seen['key'] = headers.get('apikey')
+        return Response()
+
+    monkeypatch.setattr(pdf.urllib.request, 'urlopen', fake_urlopen)
+    assert pdf._try_ocr_space('scan.pdf') == 'Title'
+    assert seen['key'] == 'helloworld'
 
 
 def test_pdf_edges():

@@ -25,6 +25,9 @@ def isolated_cache(tmp_path, monkeypatch):
     can no longer change pass/fail of any test (F648-001).
     """
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    # OCR is an external side effect; provider tests replace it explicitly
+    # where needed, while the default suite stays hermetic.
+    monkeypatch.setenv('NAMER_DISABLE_OCR', '1')
 
 
 def pytest_configure(config):

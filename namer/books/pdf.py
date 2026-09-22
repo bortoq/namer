@@ -19,6 +19,8 @@ from namer.books.models import BookQuery, ReadBudget
 _TITLE_RE = re.compile(rb'/Title\s*\(((?:\\.|[^()])*)\)', re.DOTALL)
 _AUTHOR_RE = re.compile(rb'/Author\s*\(((?:\\.|[^()])*)\)', re.DOTALL)
 _AUTHOR_SPLIT_RE = re.compile(r'\s*(?:[,;]|\s+and\s+|\s+&\s+)\s*', re.IGNORECASE)
+_PERSON_LINE_RE = re.compile(
+    r'^[A-ZА-ЯЁ][a-zа-яё]+(?:\s+[A-ZА-ЯЁ][a-zа-яё]+){1,3}$')
 
 
 def _unescape_pdf_string(raw: bytes) -> str:
@@ -256,13 +258,13 @@ def _multipart(fields: dict, name: str, content: bytes,
 def _try_ocr_space(path: str) -> str:
     """OCR first three PDF pages through OCR.space Engine 3.
 
-    Disabled unless OCR_SPACE_API_KEY is configured, so ordinary offline
-    runs never upload personal documents by accident.
+    Uses OCR.space's documented public demo key by default.  A personal key
+    can be supplied through OCR_SPACE_API_KEY to avoid shared-key limits.
     """
     try:
-        api_key = os.environ.get('OCR_SPACE_API_KEY', '').strip()
-        if not api_key:
+        if os.environ.get('NAMER_DISABLE_OCR') == '1':
             return ''
+        api_key = os.environ.get('OCR_SPACE_API_KEY', '').strip() or 'helloworld'
         content = _first_pages_pdf(path, 3)
         if not content:
             return ''
@@ -379,6 +381,23 @@ def _text_title_authors(text: str) -> tuple:
             title = re.sub(r'\s+', ' ', title).strip()
             if title:
                 return title, split_authors(lines[0])
+        # OCR covers often put a subtitle/tagline first, then a title on
+        # several lines, and the author below it (e.g. Russian editions of
+        # ``How Linux Works``). Find the first plausible person line and use
+        # the preceding title block instead of blindly taking lines[0].
+        for author_idx, line in enumerate(lines[1:6], start=1):
+            if not _PERSON_LINE_RE.fullmatch(line):
+                continue
+            title_lines = lines[:author_idx]
+            if len(title_lines) >= 2 and title_lines[0][:1].islower():
+                title_lines = title_lines[1:]
+            if title_lines:
+                normalized = []
+                for part in title_lines:
+                    normalized.append(part.capitalize() if part.isupper() else part)
+                title = re.sub(r'\s+', ' ', ' '.join(normalized)).strip()
+                if len(title) >= 2:
+                    return title, (line,)
         title = lines[0]
         authors = split_authors(lines[1]) if len(lines) > 1 else ()
         return title, authors
