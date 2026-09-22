@@ -102,6 +102,30 @@ def _search_page(title: str, language: str) -> Optional[str]:
     return results[0] if results else None
 
 
+def _strip_disambiguation(page: str) -> str:
+    """Strip Wikipedia disambiguation suffixes: 'X (film)' -> 'X'."""
+    clean = re.sub(
+        r'\s*\(\s*(?:film|movie|pel[íi]cula|tv series|serie|'
+        r'film\s*,\s*\d{4}|tv series\s*,\s*\d{4})[^)]*\)\s*$',
+        '', page, flags=re.IGNORECASE,
+    ).strip()
+    return clean or page
+
+
+def search_canonical_title(hint: str, language: str = 'en') -> Optional[str]:
+    """Search Wikipedia in *language* for *hint*; return the canonical page
+    title with disambiguation suffixes stripped, or None when no page found.
+
+    The hint may carry release junk ('Justice League Dark DDP'): the wiki
+    search is fuzzy enough to land on the real page; the caller validates
+    the match before voting.
+    """
+    page = _search_page(hint, language)
+    if not page:
+        return None
+    return _strip_disambiguation(page)
+
+
 def _get_langlink(page_title: str, from_lang: str, to_lang: str) -> Optional[str]:
     """Get the *to_lang* title for *page_title* on *from_lang* Wikipedia.
 

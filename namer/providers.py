@@ -15,7 +15,7 @@ import os
 import re
 from typing import Dict, List, Optional
 
-from namer.parser import parse_file, title_from_path, _SERIES_PATTERN
+from namer.parser import parse_file, _SERIES_PATTERN
 from namer.provider_opinion import ProviderOpinion
 from namer.identify.models import FieldCandidate
 
@@ -29,16 +29,61 @@ _FILENAME_FIELDS = ('quality', 'resolution', 'source', 'codec', 'audio', 'hdr', 
 _FILENAME_FIELD_CONF = dict.fromkeys(_FILENAME_FIELDS, 0.8)
 
 
+# ── Title-match validation (hint vs. canonical lookup result) ────────────────
+#
+# The filename-derived title is only a *search hint*.  It is never voted as
+# the canonical title itself; online providers vote what their lookups
+# returned, and only when the result plausibly matches the hint.  Otherwise
+# the feed abstains and the hint survives as the fallback — a dirty hint can
+# no longer win the vote (user-reported 'title' + junk, e.g. '... DDP').
+
+# Words too generic to count in hint<->canonical similarity.
+_STOPWORDS = frozenset({
+    'the', 'a', 'an', 'of', 'and', 'or', 'in', 'on', 'at', 'to', 'for',
+    'with', 'vs', 'de', 'la', 'le', 'el', 'los', 'las', 'der', 'die',
+    'das', 'il', 'del', 'da', 'do', 'du', 'les', 'une', 'un',
+})
+
+
+def _significant_words(text: str) -> set:
+    """Lowercased content words (>=2 chars, no stopwords) of *text*."""
+    words = re.findall(r'[\w]{2,}', str(text).lower())
+    return {w for w in words if w not in _STOPWORDS}
+
+
+def _validated_match(hint: str, candidate: str,
+                     hint_year=None, candidate_year=None) -> bool:
+    """True when *candidate* (an online lookup result) plausibly refers to
+    the same title as the *hint*: year agreement (when both are known) plus
+    word overlap / containment.  Never accept a candidate the hint cannot be
+    evidence for."""
+    if hint_year and candidate_year and int(hint_year) != int(candidate_year):
+        return False
+    hw = _significant_words(hint)
+    cw = _significant_words(candidate)
+    if not hw or not cw:
+        return False
+    inter = len(hw & cw)
+    if inter / len(hw | cw) >= 0.6:
+        return True
+    if inter == len(hw) and len(hw) >= 3 and len(hw) <= len(cw):
+        return True  # hint is a substantial subset of the candidate
+    if (hint_year and candidate_year and int(hint_year) == int(candidate_year)
+            and inter >= 1 and len(hw) <= 3):
+        return True  # year-confirmed synonym (e.g. translated titles)
+    return False
+
+
 # ── Local providers ──────────────────────────────────────────────────────────
 
 def filename_feed(file_path: str, known_title: str = '') -> ProviderOpinion:
-    """Feed from the file's own name (the identity source for S/E)."""
+    """Feed from the file's own name (the identity source for S/E).
+
+    The title is deliberately NOT voted here: it is only a search hint for
+    the online providers (core.py applies the hint to ``meta`` directly).
+    """
     meta = parse_file(file_path)
     op = ProviderOpinion('filename')
-
-    title = known_title or meta.get('title', '')
-    if title:
-        op.set('title', title, 0.9)
 
     is_special = meta.get('is_special', False)
     season = meta.get('season', 0)
@@ -121,7 +166,8 @@ def _season_from_directories(file_path: str) -> Optional[int]:
         next_parent = os.path.dirname(parent)
         parent_name = os.path.basename(next_parent) if next_parent and next_parent != parent else ''
         if parent_name:
-            norm = lambda s: re.sub(r'[._\s\-\[\]()]+', ' ', s).strip().lower()
+            def norm(s: str) -> str:
+                return re.sub(r'[._\s\-\[\]()]+', ' ', s).strip().lower()
             pn, dn = norm(parent_name), norm(dirname)
             suffix = ''
             if dn.startswith(pn + ' '):
@@ -145,11 +191,12 @@ def _season_from_directories(file_path: str) -> Optional[int]:
 
 
 def dirname_feed(file_path: str) -> ProviderOpinion:
-    """Feed from the directory tree (show name + explicit season folders)."""
+    """Feed from the directory tree (show name + explicit season folders).
+
+    The directory title is applied to ``meta`` by core.py as part of the
+    hint selection; it is NOT voted on here (see module header).
+    """
     op = ProviderOpinion('dirname')
-    dir_title = title_from_path(file_path)
-    if dir_title:
-        op.set('title', dir_title, 0.7)
     season = _season_from_directories(file_path)
     if season is not None:
         op.set('season', season, 0.8)
@@ -187,27 +234,42 @@ def file_feed(file_path: str) -> ProviderOpinion:
 # ── Online providers ─────────────────────────────────────────────────────────
 
 def wikipedia_feed(meta: Dict, language: str) -> ProviderOpinion:
-    """Feed from Wikipedia: canonical/translated title, premiere year, ep titles.
+    """Feed from Wikipedia: canonical page title, premiere year, ep titles.
 
-    *meta* must already carry the title enriched by core (translation pass).
-    Episode-title votes only happen when the S/E hint is explicit — with an
+    The title in *meta* is only a search hint: the page found by searching
+    it is voted only when it plausibly matches the hint (_validated_match:
+    word overlap + year agreement).  When nothing matches, the feed abstains
+    — the hint must never win the vote by being echoed back as 'canonical'.
+    Episode-title votes only happen when the S/E hint is explicit; with an
     assumed season the lookup target is unreliable, so we abstain instead of
     guessing a possibly-wrong episode title.
     """
     op = ProviderOpinion('wikipedia')
     try:
-        from namer.wikipedia import fetch_episode_titles, fetch_show_year
-        title = meta.get('title', '')
-        if not title:
+        from namer.wikipedia import (search_canonical_title,
+                                     fetch_episode_titles, fetch_show_year)
+        hint = meta.get('title', '')
+        if not hint:
             op.abstain = True
             return op
-        op.set('title', title, 0.9)
-        year = fetch_show_year(title, language)
+        canonical = search_canonical_title(hint, language)
+        if not canonical:
+            op.abstain = True
+            return op
+        hint_year = meta.get('year') or None
+        # The page year is cached by fetch_show_year; it is needed to
+        # validate translated-synonym matches ('Yuru Camp' → 'Laid-Back
+        # Camp'), so it is always fetched once a page was found.
+        year = fetch_show_year(canonical, language)
+        if not _validated_match(hint, canonical, hint_year, year):
+            op.abstain = True
+            return op
+        op.set('title', canonical, 0.9)
         if year:
             op.set('year', year, 0.85)
         if meta.get('is_series') and meta.get('episode') and not meta.get('season_assumed'):
             season = 0 if meta.get('is_special') else meta.get('season', 0)
-            eps = fetch_episode_titles(title, language)
+            eps = fetch_episode_titles(canonical, language)
             ep_title = eps.get((season, meta['episode']))
             if ep_title:
                 op.set('ep_title', ep_title, 0.9)
@@ -217,12 +279,26 @@ def wikipedia_feed(meta: Dict, language: str) -> ProviderOpinion:
 
 
 def tvmaze_feed(meta: Dict, language: str) -> ProviderOpinion:
-    """Feed from TVmaze: canonical show name, premiere year, episode title."""
+    """Feed from TVmaze: canonical show name, premiere year, episode title.
+
+    Votes only when the lookup actually resolved a show
+    (``meta['_tvmaze_resolved']`` set by ``enrich_episode_titles``).  A
+    failed lookup must never echo the (possibly dirty) hint back as the
+    canonical name.  A year conflict with the hint means the wrong show was
+    found → abstain.
+    """
     op = ProviderOpinion('tvmaze')
     try:
         from namer.tvmaze import enrich_episode_titles
         m = dict(meta)
         enrich_episode_titles(m, language=language)
+        if not m.get('_tvmaze_resolved'):
+            op.abstain = True
+            return op
+        if (m.get('year') and meta.get('year')
+                and m['year'] != meta['year']):
+            op.abstain = True
+            return op
         if m.get('title'):
             op.set('title', m['title'], 0.9)
         if m.get('year'):
@@ -235,7 +311,13 @@ def tvmaze_feed(meta: Dict, language: str) -> ProviderOpinion:
 
 
 def tmdb_feed(meta: Dict, tmdb_key: str, language: str) -> ProviderOpinion:
-    """Feed from TMDB: localized title, year, episode title (requires key)."""
+    """Feed from TMDB: localized title, year, episode title (requires key).
+
+    Votes only when the lookup actually resolved a movie/show
+    (``meta['_tmdb_resolved']`` set by ``enrich_meta``); a failed lookup
+    must never echo the (possibly dirty) hint back as the canonical name.
+    A year conflict with the hint means the wrong title was found → abstain.
+    """
     op = ProviderOpinion('tmdb')
     if not tmdb_key:
         op.abstain = True
@@ -244,6 +326,13 @@ def tmdb_feed(meta: Dict, tmdb_key: str, language: str) -> ProviderOpinion:
         from namer.enricher import enrich_meta
         m = dict(meta)
         enrich_meta(m, tmdb_key, language)
+        if not m.get('_tmdb_resolved'):
+            op.abstain = True
+            return op
+        if (m.get('year') and meta.get('year')
+                and m['year'] != meta['year']):
+            op.abstain = True
+            return op
         if m.get('title'):
             op.set('title', m['title'], 0.9)
         if m.get('year'):

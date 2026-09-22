@@ -326,7 +326,7 @@ class TestProcessDirectoryIntegration:
         from namer.core import process_directory
         renamed, total, errors = process_directory(str(tmp_path))
         assert (renamed, total) == (0, 0)
-        assert 'No video files found.' in capsys.readouterr().out
+        assert 'No media files found.' in capsys.readouterr().out
 
 
 class TestDsrGeometry:
@@ -436,4 +436,3 @@ class TestCliExitCode:
         (show / 'Show.S01E01.mkv').write_bytes(b'x')
         proc = self._run(show, '-n', '-p', '{season:02d}.{episode:02d}.{ext}')
         assert proc.returncode == 0, proc.stderr
-

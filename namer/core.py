@@ -153,7 +153,8 @@ def generate_new_name(
             '_book_identity': ident,
         }
         return new_base, meta
-    from namer.fusion import fuse, update_scores, Scores
+    from namer.fusion import fuse, Scores
+    from namer.voting import update_scores
 
     if progress is not None:
         progress.set_action('parsing feeds')
@@ -530,7 +531,7 @@ def process_directory(
     language: str = 'en',
     language_explicit: bool = False,
 ) -> Tuple[int, int, int]:
-    """Scan *directory* and rename all video files.
+    """Scan *directory* and rename all supported media files.
 
     Files are analysed in parallel (settings.MAX_CONCURRENT_FILES workers)
     because lookups are network-bound; the rename pass itself stays
@@ -565,12 +566,12 @@ def process_directory(
     except Exception:
         pass
     if not files:
-        print('No video files found.')
+        print('No media files found.')
         return 0, 0, 0
 
     total = len(files)
     if total > 1:
-        print(f'Found {total} video file{"s" if total > 1 else ""}.')
+        print(f'Found {total} media file{"s" if total > 1 else ""}.')
 
     max_workers = getattr(settings, 'MAX_CONCURRENT_FILES', 4) or 1
     progress = Progress(total=total,

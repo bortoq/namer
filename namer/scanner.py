@@ -1,4 +1,4 @@
-"""Recursive file scanner for video files."""
+"""Recursive file scanner for video media files."""
 
 import os
 from typing import List
@@ -12,7 +12,7 @@ def _skip_dir(name: str) -> bool:
 
 
 def find_video_files(directory: str, recursive: bool = True) -> List[str]:
-    """Walk *directory* and return paths to all video files.
+    """Walk *directory* and return paths to all supported video files.
 
     Args:
         directory: Root directory to scan.

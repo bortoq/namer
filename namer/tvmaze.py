@@ -18,7 +18,7 @@ import threading
 import string
 import urllib.request
 import urllib.parse
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 
 # ── Tiny disk cache ──────────────────────────────────────────────────────────
@@ -282,6 +282,7 @@ def enrich_episode_titles(meta: Dict, protect_filename: bool = False, language: 
     # Only set when a show was actually resolved, and keep the episode title
     # behaviour unchanged.
     if show_id:
+        meta['_tvmaze_resolved'] = True
         smeta = fetch_show_meta(title, language)
         if smeta:
             if smeta.get('title') and smeta['title'].lower() != title.lower():

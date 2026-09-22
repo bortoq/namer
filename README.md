@@ -1,53 +1,93 @@
 # namer
 
-Rename video/series files using metadata extracted from filenames.
+Переименование видеофайлов и электронных книг по метаданным.
 
-## Usage
+Видео: сериалы и фильмы (`mkv`, `mp4`, `avi` и другие). Имя восстанавливается
+из названия файла, дерева каталогов и (при наличии ключей) сетевых провайдеров.
+
+Книги: `fb2`, `fb2.zip`, `epub`, `pdf`, `djvu`. Имя строится из встроенных
+метаданных и имени файла; канонические значения берёт из сетевых каталогов
+(OpenLibrary, GoogleBooks) при вызове через библиотечный API.
+
+Инструмент детерминирован и консервативен: при неоднозначных метаданных файл
+остаётся на месте, существующие файлы не перезаписываются.
+
+## Использование
 
 ```bash
-# Rename all video files in the current directory (recursive)
+# Переименовать все видео и книги в текущем каталоге (рекурсивно)
 namer
 
-# Use a specific show name (overrides auto-detection)
+# Переименовать книги в заданном каталоге
+namer -d /path/to/books
+
+# Задать название шоу (отключает автоопределение для видео)
 namer "Breaking Bad"
 
-# Custom pattern
+# Задать автора (переопределение для файлов книг)
+namer -a "Виктор Пелевин" -d /path/to/books
+
+# Пользовательский шаблон
 namer -p "{dot_title}.S{season:02d}E{episode:02d}.{quality}.{ext}"
 
-# Dry-run (preview only)
+# Только предпросмотр
 namer -n
 
-# Verbose mode
+# Подробный вывод
 namer -v
 ```
 
-## Template Fields
+Полный справочник опций: `doc/usage.md`.
 
-| Field        | Description                           | Example           |
-|--------------|---------------------------------------|-------------------|
-| `{title}`    | Clean movie/show name (with spaces)   | Breaking Bad      |
-| `{dot_title}`| Title with dots (torrent-style)       | Breaking.Bad      |
-| `{season}`   | Season number (use `:02d` for padding)| 01                |
-| `{episode}`  | Episode number (use `:02d` for padding)| 01               |
-| `{ext}`      | File extension (without dot)          | mkv               |
-| `{year}`     | Year                                  | 2008              |
-| `{quality}`    | Full quality label (with spaces)      | BluRay 1080p x264 |
-| `{dot_quality}`| Quality label with dots (torrent-style)| BluRay.1080p.x264 |
-| `{resolution}` | Resolution                           | 1080p             |
-| `{source}`   | Source                                | BluRay            |
-| `{codec}`    | Codec                                 | x264              |
-| `{audio}`    | Audio codec                           | DTS               |
-| `{hdr}`      | HDR type                              | HDR10             |
-| `{mod}`        | Edition modifiers                    | Extended/Unrated  |
-| `{ep_title}`   | Episode title (from TMDB)            | Pilot             |
-| `{audio_lang}` | Audio languages (comma-separated)    | jpn,eng           |
-| `{sub_lang}`   | Subtitle languages (comma-separated) | eng               |
-| `{channels}`   | Max audio channels                   | 6                 |
+## Поля шаблонов
 
-## Default Templates
+Видео:
 
-**Movie:** `{title} ({year}) {mod}.{ext}`
-→ `The Matrix (1999) .mkv`
+| Поле | Описание | Пример |
+|---|---|---|
+| `{title}` | Название фильма/шоу | Breaking Bad |
+| `{dot_title}` | Название с точками | Breaking.Bad |
+| `{season}`, `{episode}` | Номера сезона и эпизода (`:02d` — паддинг) | 01 |
+| `{ext}` | Расширение без точки | mkv |
+| `{year}` | Год | 2008 |
+| `{quality}` / `{dot_quality}` | Качество (пробелы/точки) | BluRay 1080p x264 |
+| `{resolution}` | Разрешение | 1080p |
+| `{source}` | Источник | BluRay |
+| `{codec}` | Кодек | x264 |
+| `{audio}` | Аудиокодек | DTS |
+| `{hdr}` | Тип HDR | HDR10 |
+| `{mod}` | Модификаторы издания | Extended/Unrated |
+| `{ep_title}` | Название эпизода (из TMDB) | Pilot |
+| `{audio_lang}` | Языки аудио через запятую | jpn,eng |
+| `{sub_lang}` | Языки субтитров через запятую | eng |
+| `{channels}` | Максимум аудиоканалов | 6 |
 
-**Series:** `{season:02d}.{episode:02d}. {ep_title}.{ext}`
-→ `01.01. Pilot.mkv`
+Книги:
+
+| Поле | Описание | Пример |
+|---|---|---|
+| `{author}` | Первый автор | Виктор Пелевин |
+| `{authors}` | Все авторы через запятую | Виктор Пелевин |
+| `{title}` | Название книги | Чапаев и Пустота |
+| `{series}` | Серия | Романы |
+| `{series_index}` | Номер в серии (`:02d` — паддинг) | 3 |
+| `{year}` | Год | 1996 |
+| `{lang}` / `{language}` | Язык | ru |
+| `{isbn}` | ISBN-13 | 9780306406157 |
+| `{publisher}` | Издатель | АСТ |
+| `{ext}` | Расширение без точки (`fb2.zip` сохраняется целиком) | fb2 |
+
+Неизвестный плейсхолдер или поле, требуемое шаблоном, но отсутствующее
+у файла (например, `{series_index}` вне серии), — отказ без переименования.
+
+## Шаблоны по умолчанию
+
+| Вид | Шаблон | Пример |
+|---|---|---|
+| Фильм | `{title} ({year}) {mod}.{ext}` | `The Matrix (1999) .mkv` |
+| Сериал | `{season:02d}.{episode:02d}. {ep_title}.{ext}` | `01.01. Pilot.mkv` |
+| Книга | `{author} - {title} ({year}).{ext}` | `Виктор Пелевин - Чапаев и Пустота (1996).fb2` |
+| Книга в серии | `{author} - {series} - {series_index:02d} - {title}.{ext}` | `Фрэнк Герберт - Хроники - 01 - Дюна.epub` |
+
+Документы: `doc/usage.md` (CLI), `doc/development.md` (разработка),
+`doc/architecture-identify.md` (видео-конвейер), `doc/roadmap.md` (архитектура).

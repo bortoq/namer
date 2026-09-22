@@ -80,6 +80,28 @@ class TestGenerateNewName:
         )
         assert name == "The Matrix (1999).mkv"
 
+    def test_release_junk_not_in_new_name(self):
+        """Release group / network tag / resolution must not leak into the
+        generated name (user-reported: 'GROUP', 'RARBG', 'AMZN', 'NF',
+        '1080' appeared inside the new filename)."""
+        name, meta = generate_new_name(
+            "Better.Call.Saul.S06E07.Plan.and.Execution.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb.mkv",
+            pattern="{season:02d}.{episode:02d}. {ep_title}.{ext}",
+        )
+        assert name == "06.07. Plan and Execution.mkv", f"name={name!r}"
+
+        name, meta = generate_new_name(
+            "Movie.Name.2020.1080p.AMZN.WEB-DL.x264-GROUP.mkv",
+            pattern="{title} ({year}).{ext}",
+        )
+        assert name == "Movie Name (2020).mkv", f"name={name!r}"
+
+        name, meta = generate_new_name(
+            "Show.S01E01.Pilot.1080.BluRay.x264-GROUP.mkv",
+            pattern="{season:02d}.{episode:02d}. {ep_title}.{ext}",
+        )
+        assert name == "01.01. Pilot.mkv", f"name={name!r}"
+
 @pytest.mark.live
 class TestGenerateNewNameWithEnrichment:
     def test_enrich_episode_title(self):
@@ -981,3 +1003,56 @@ class TestInvalidCharsSetting:
         for good in settings.INVALID_CHAR_REPLACEMENTS.values():
             if isinstance(good, (tuple, list)):
                 assert len(good) == 2, good
+
+
+class TestTitleLookupFirst:
+    """Title comes from the online lookup; the filename parse is only the
+    hint.  Local providers never vote on the title (test_providers.py)."""
+
+    def test_online_canonical_replaces_dirty_hint(self, monkeypatch):
+        from namer.providers import Feed
+        monkeypatch.setattr('namer.providers.wikipedia_feed',
+                            lambda meta, lang: Feed('wikipedia',
+                                                    {'title': 'Justice League Dark',
+                                                     'year': 2017}))
+        name, meta = generate_new_name(
+            "Justice.League.Dark.2017.1080p.BluRay.DDP.5.1.x265-EDGE2020.mkv",
+            pattern='{title} ({year}).{ext}')
+        assert meta['title'] == 'Justice League Dark'
+        assert meta['_title_source'] == 'online'
+        assert name == 'Justice League Dark (2017).mkv'
+
+    def test_online_canonical_overrides_clean_hint(self, monkeypatch):
+        from namer.providers import Feed
+        monkeypatch.setattr('namer.providers.tvmaze_feed',
+                            lambda meta, lang: Feed('tvmaze',
+                                                    {'title': 'Laid-Back Camp',
+                                                     'year': 2018}))
+        name, meta = generate_new_name(
+            "Yuru.Camp.S01E01.1080p.mkv",
+            pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
+        assert meta['title'] == 'Laid-Back Camp'
+        assert meta['_title_source'] == 'online'
+        assert name == 'Laid-Back Camp.S01E01.mkv'
+
+    def test_known_title_not_overridden_by_online(self, monkeypatch):
+        """-t is authoritative: online title verdicts are ignored."""
+        from namer.providers import Feed
+        monkeypatch.setattr('namer.providers.wikipedia_feed',
+                            lambda meta, lang: Feed('wikipedia',
+                                                    {'title': 'Some Other Show'}))
+        name, meta = generate_new_name(
+            "Show.S01E01.1080p.mkv", known_title='Breaking Bad',
+            pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
+        assert meta['title'] == 'Breaking Bad'
+        assert meta['_title_source'] == 'known'
+        assert name == 'Breaking Bad.S01E01.mkv'
+
+    def test_no_online_title_falls_back_to_hint(self):
+        """Offline (feeds abstain): the parsed hint is the fallback title."""
+        name, meta = generate_new_name(
+            "Justice.League.Dark.2017.1080p.BluRay.x265-EDGE2020.mkv",
+            pattern='{title} ({year}).{ext}')
+        assert meta['title'] == 'Justice League Dark'
+        assert meta['_title_source'] == 'hint'
+        assert name == 'Justice League Dark (2017).mkv'

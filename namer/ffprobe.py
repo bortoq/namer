@@ -8,7 +8,6 @@ installed or the file cannot be probed.
 
 import json
 import subprocess
-import sys
 from typing import Dict, List, Optional
 
 

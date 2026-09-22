@@ -645,3 +645,166 @@ class TestSpecialEpisodeDetection:
         from namer.parser import parse_file
         meta = parse_file("/dummy/Ovation [01].mkv")
         assert meta.get('is_special') is False
+
+
+class TestReleaseJunkLeak:
+    """Release-group names / network tags / resolutions must never leak
+    into the generated title or episode title (user-reported: new filenames
+    contained 'GROUP', 'RARBG', 'NTb', 'AMZN', 'NF', '1080', ...)."""
+
+    # ── episode title (extract_ep_title_from_filename) ────────────────────
+
+    def test_ep_title_strips_release_group(self):
+        """'x264-GROUP' after the marker is a release group, not a title."""
+        from namer.parser import extract_ep_title_from_filename as ep
+        assert ep("The.Show.S01E01.Pilot.1080p.WEB-DL.x264-GROUP.mkv") == "Pilot"
+        assert ep("Series.Name.S01E01.Episode.Name.2160p.UHD.BluRay.x265-GROUP.mkv") == "Episode Name"
+
+    def test_ep_title_strips_group_and_network_tag(self):
+        """AMZN/NF network tags and the group glued to the codec are stripped."""
+        from namer.parser import extract_ep_title_from_filename as ep
+        assert ep(
+            "Better.Call.Saul.S06E07.Plan.and.Execution.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb.mkv"
+        ) == "Plan and Execution"
+        assert ep(
+            "Attack.on.Titan.S04E01.The.Other.Side.of.the.Sea.1080p.NF.WEB-DL.DDP5.1.x264-NTb.mkv"
+        ) == "The Other Side of the Sea"
+
+    def test_ep_title_strips_dot_separated_group(self):
+        from namer.parser import extract_ep_title_from_filename as ep
+        assert ep("Show.S01E01.Pilot.1080p.WEB-DL.x264.GROUP.mkv") == "Pilot"
+
+    def test_ep_title_strips_bare_resolution(self):
+        """'1080' without the p/i suffix is a resolution, not a title word."""
+        from namer.parser import extract_ep_title_from_filename as ep
+        assert ep("Show.S01E01.Pilot.1080.BluRay.x264-GROUP.mkv") == "Pilot"
+        assert ep("Show.S01E01.Pilot.720p.WEBRip.x264-RARBG.mkv") == "Pilot"
+
+    def test_ep_title_strips_10bit_resolution_form(self):
+        from namer.parser import extract_ep_title_from_filename as ep
+        assert ep("Show.S01E01.Pilot.1080p10.AMZN.WEB-DL.x264-NTb.mkv") == "Pilot"
+
+    def test_ep_title_strips_trailing_release_year(self):
+        from namer.parser import extract_ep_title_from_filename as ep
+        assert ep("Show.S01E01.Pilot.2020.1080p.WEB-DL.x264-GROUP.mkv") == "Pilot"
+
+    def test_ep_title_junk_only_is_empty(self):
+        """A tail that is nothing but release tokens must not become an
+        episode title (regression: it used to return '...GROUP')."""
+        from namer.parser import extract_ep_title_from_filename as ep
+        assert ep("Show.S01E01.1080p.WEB-DL.x264-GROUP.mkv") == ""
+        assert ep("Show.S01E01.2018.AniDub.BDRip.avi") != "2018"  # year never leaks
+
+    def test_ep_title_preserves_genuine_ellipsis(self):
+        from namer.parser import extract_ep_title_from_filename as ep
+        assert ep("Show.S01E17...In.Translation.1080p.WEB-DL.x264-GROUP.mkv") == "...In Translation"
+        assert ep("Show.S01E17...In.Translation.mkv") == "...In Translation"
+
+    def test_ep_title_plain_title_untouched(self):
+        from namer.parser import extract_ep_title_from_filename as ep
+        assert ep("Show.S01E01.Pilot.mkv") == "Pilot"
+        assert ep("Anime.S01E01.Episode Name.720p.mkv") == "Episode Name"
+
+    # ── title (clean_title) ───────────────────────────────────────────────
+
+    def test_clean_title_strips_group_and_network_tag(self):
+        assert clean_title("Movie.Name.2020.1080p.AMZN.WEB-DL.x264-GROUP.mkv") == "Movie Name"
+        assert clean_title("Movie.Name.2020.2160p.UHD.BluRay.x265-RARBG.mkv") == "Movie Name"
+        assert clean_title("Movie.Name.2020.1080p.NF.WEBRip.x264-GROUP.mkv") == "Movie Name"
+
+    def test_clean_title_strips_bare_resolution(self):
+        assert clean_title("Movie.Name.1080.BluRay.x264-GROUP.mkv") == "Movie Name"
+
+    def test_clean_title_strips_glued_group_only(self):
+        """A hyphenated title word must survive: 'Spider-Man' is not a group."""
+        assert clean_title("Show.Name.2020.Spider-Man.mkv") == "Show Name Spider Man"
+        assert clean_title("X-Men.2020.1080p.BluRay.x264-GROUP.mkv") == "X Men"
+        assert clean_title("Spider-Man.Homecoming.2017.1080p.BluRay.x264-GROUP.mkv") == "Spider Man Homecoming"
+
+    def test_clean_title_modifier_behaviour_unchanged(self):
+        assert clean_title("Gone Girl (2014).uncut.mkv") == "Gone Girl"
+        assert clean_title("Uncut.Gems.2019.mkv") == "Uncut Gems"
+        assert clean_title("Mieruko-chan - 01 (WEBRip 1920x1080 x264 AAC Rus + Jap).mkv") == "Mieruko chan"
+        assert clean_title("Bad.Santa.2003.1080p.BluRay.x264.AAC5.1-[YTS.MX] [merged].mkv") == "Bad Santa"
+
+    # ── parse_file integration ────────────────────────────────────────────
+
+    def test_parse_file_title_and_ep_title_clean(self):
+        meta = parse_file(
+            "Better.Call.Saul.S06E07.Plan.and.Execution.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb.mkv"
+        )
+        assert meta["title"] == "Better Call Saul", f"title={meta['title']!r}"
+        assert meta["ep_title"] == "Plan and Execution", f"ep_title={meta['ep_title']!r}"
+
+    def test_parse_file_movie_title_clean(self):
+        meta = parse_file("Movie.Name.2020.1080p.AMZN.WEB-DL.x264-GROUP.mkv")
+        assert meta["title"] == "Movie Name", f"title={meta['title']!r}"
+        # quality fields still carry the release metadata for the template
+        assert meta["quality"] != "Unknown"
+
+    # ── DDP.5.1 / DD+ 5.1 / 6CH / MkvCage.ws (user batch #2) ─────────────
+
+    def test_clean_title_ddp51(self):
+        """'DDP.5.1' is one audio token; 'DDP' must not leak into the title."""
+        assert clean_title(
+            "Justice.League.Dark.2017.1080p.BluRay.DDP.5.1.x265-EDGE2020.mkv"
+        ) == "Justice League Dark"
+
+    def test_clean_title_ddplus51_atmos(self):
+        """'DD+ 5.1 Atmos' and the group after 'H.265.' are release junk."""
+        assert clean_title(
+            "Good Luck, Have Fun, Don't Die 2026 REPACK 1080p AMZN WEB-DL "
+            "DD+ 5.1 Atmos. H.265. POOTLED.mkv"
+        ) == "Good Luck, Have Fun, Don't Die"
+
+    def test_clean_title_6ch_dotted_group(self):
+        """'6CH-MkvCage.ws' — channel count + dotted release group."""
+        assert clean_title(
+            "Snowpiercer.2013.1080p.BluRay.10bit.HEVC.6CH-MkvCage.ws.mkv"
+        ) == "Snowpiercer"
+
+    def test_ep_title_ddp51_and_6ch(self):
+        """Same token families cleaned in the episode-title path."""
+        from namer.parser import extract_ep_title_from_filename as ep
+        assert ep("Show.S01E01.Pilot.1080p.BluRay.DDP.5.1.x265-EDGE2020.mkv") == "Pilot"
+        assert ep("Show.S01E01.Pilot.1080p.BluRay.10bit.HEVC.6CH-MkvCage.ws.mkv") == "Pilot"
+        assert ep("Show.S01E01.Pilot.1080p.AMZN.WEB-DL.DD+ 5.1 Atmos.H.265.POOTLED.mkv") == "Pilot"
+
+    def test_episode_fallback_does_not_eat_codec_digits(self):
+        """'265' in 'H.265' / '264' in 'h.264' are codecs, not episodes."""
+        from namer.parser import parse_season_episode, extract_ep_title_from_filename as ep
+        assert ep("Show.S01E01.Pilot.1080p.H.265.POOTLED.mkv") == "Pilot"
+        assert parse_season_episode("H.265.mkv") == (None, None)
+        assert parse_season_episode("Show.S01E01.H.265.mkv") == (1, 1)
+        assert clean_title("Show.S01E01.x264.mkv") == "Show"
+
+    def test_parse_file_ddp51_integration(self):
+        meta = parse_file("Justice.League.Dark.2017.1080p.BluRay.DDP.5.1.x265-EDGE2020.mkv")
+        assert meta["title"] == "Justice League Dark", f"title={meta['title']!r}"
+
+    def test_parse_file_6ch_integration(self):
+        meta = parse_file("Snowpiercer.2013.1080p.BluRay.10bit.HEVC.6CH-MkvCage.ws.mkv")
+        assert meta["title"] == "Snowpiercer", f"title={meta['title']!r}"
+
+    def test_quality_ddp51_audio_detected(self):
+        """DDP.5.1 / DD+ 5.1 are recognized as AC3 audio (quality label)."""
+        from namer.quality import parse_quality
+        q = parse_quality("Justice.League.Dark.2017.1080p.BluRay.DDP.5.1.x265-EDGE2020.mkv")
+        assert q.audio == "AC3", f"audio={q.audio!r}"
+        q = parse_quality(
+            "Good Luck, Have Fun, Don't Die 2026 1080p AMZN WEB-DL DD+ 5.1 Atmos.mkv")
+        assert q.audio == "AC3", f"audio={q.audio!r}"
+        assert q.hdr == "", q.hdr
+
+    # ── PROPER/REPACK: stripped from title, NOT a modifier anymore ──────
+
+    def test_proper_not_in_modifiers(self):
+        """PROPER/REPACK are release-status tags: stripped, but never {mod}."""
+        for f, expected in (
+            ("Movie.Name.2020.PROPER.1080p.BluRay.x264-GROUP.mkv", "Movie Name"),
+            ("Movie.Name.2020.REPACK.1080p.BluRay.x264-GROUP.mkv", "Movie Name"),
+            ("Show.S01E01.Pilot.1080p.PROPER.WEB-DL.x264-GROUP.mkv", "Show"),
+        ):
+            m = parse_file(f)
+            assert m["title"] == expected, f"title={m['title']!r} for {f}"
+            assert m["mod"] == "", f"mod={m['mod']!r} for {f}"

@@ -1,99 +1,150 @@
-# namer — CLI reference
+# namer — справочник CLI
 
-`namer` renames video files using metadata extracted from the filename, the
-directory tree, and (when keys are available) online providers.  It is
-deterministic and conservative: when the metadata is ambiguous it **leaves
-the file in place** rather than risk a wrong rename.
+`namer` переименовывает видеофайлы и книги, используя метаданные из имени
+файла, дерева каталогов, встроенных тегов и (при наличии ключей) сетевых
+провайдеров. Работа детерминирована и консервативна: при неоднозначных
+метаданных файл **остаётся на месте**, а не переименовывается с угаданным
+значением.
 
-## Synopsis
+## Синопсис
 
 ```
 namer [TITLE] [options]
 ```
 
-## Options
+Обрабатываются видео (`mkv`, `mp4`, `avi`, `m2ts`, `ts`, `m4v`, `mov`, `wmv`,
+`flv`, `webm`, `mpg`, `mpeg`, `vob`, `iso`) и книги (`fb2`, `fb2.zip`, `epub`,
+`pdf`, `djvu`). Сканирование рекурсивно; скрытые каталоги пропускаются.
 
-| Option | Description |
+## Опции
+
+| Опция | Описание |
 |---|---|
-| `TITLE` (positional), `-t/--title` | Show/movie name; overrides auto-detection from the filename. |
-| `-sn N`, `--season-number N` | Force season `N`; also marks the file as a series. |
-| `-p PATTERN`, `--pattern` | Custom rename template (see *Template fields*). |
-| `-n`, `--dry-run` | Preview changes without renaming. |
-| `--tmdb-key KEY` | TMDB API key; enables episode-title and year enrichment. |
-| `-l CODE`, `--language CODE` | Language for show/episode names (`en`, `ru`, `de`, ...). Default `en`. |
-| `-d DIR`, `--directory DIR` | Process `DIR` instead of the current directory. |
-| `-v`, `--verbose` | Verbose output (shows subdirectory paths). |
-| `-V`, `--version` | Print version and exit. |
+| `TITLE` (позиционный), `-t/--title` | Название шоу/фильма; переопределяет автоопределение. |
+| `-a AUTHOR`, `--author AUTHOR` | Автор книги; переопределение только для файлов книг. |
+| `-sn N`, `--season-number N` | Принудительный сезон `N`; также помечает файл как сериал. |
+| `-p PATTERN`, `--pattern` | Пользовательский шаблон (см. *Поля шаблонов*). |
+| `-n`, `--dry-run` | Предпросмотр без переименования. |
+| `--tmdb-key KEY` | Ключ TMDB; включает обогащение названий эпизодов и года. |
+| `-l CODE`, `--language CODE` | Язык названий шоу/эпизодов (`en`, `ru`, `de`, ...). По умолчанию `en`. |
+| `-d DIR`, `--directory DIR` | Обработать `DIR` вместо текущего каталога. |
+| `-v`, `--verbose` | Подробный вывод (пути подкаталогов). |
+| `-V`, `--version` | Версия и выход. |
 
-## Examples
+## Примеры
 
 ```bash
-# Rename all videos in the current directory (recursive)
+# Переименовать все видео и книги в текущем каталоге (рекурсивно)
 namer
 
-# Force a known show name (skips auto-detection)
+# Задать известное название шоу (пропуск автоопределения)
 namer "Breaking Bad"
 namer -t "Breaking Bad"
 
-# Force season 2 of a show
+# Принудительный сезон 2
 namer -sn 2 -t "Show Name"
 
-# Custom pattern
+# Книги: задать автора для всего каталога
+namer -a "Виктор Пелевин" -d /path/to/books
+
+# Пользовательский шаблон
 namer -p "{dot_title}.S{season:02d}E{episode:02d}.{quality}.{ext}"
 
-# Preview only (dry-run)
+# Шаблон для книг
+namer -p "{author} - {title}.{ext}" -d /path/to/books
+
+# Только предпросмотр
 namer -n
 
-# Enrich episode titles from TMDB
+# Обогащение названий эпизодов из TMDB
 namer --tmdb-key YOUR_KEY
 
-# Russian episode/show names
+# Русские названия шоу/эпизодов
 namer -l ru
 
-# Process a specific directory
+# Обработать заданный каталог
 namer -d /path/to/videos
 ```
 
-## Template fields
+## Поля шаблонов
 
-| Field | Meaning | Example |
+Видео:
+
+| Поле | Значение | Пример |
 |---|---|---|
-| `{title}` | Clean movie/show name | Breaking Bad |
-| `{dot_title}` | Title with dots (torrent-style) | Breaking.Bad |
-| `{season}` | Season number | 1 |
-| `{episode}` | Episode number | 1 |
-| `{ext}` | Extension, no dot | mkv |
-| `{year}` | Year | 2008 |
-| `{quality}` | Full quality label (spaces) | BluRay 1080p x264 |
-| `{dot_quality}` | Quality label with dots | BluRay.1080p.x264 |
-| `{resolution}` | Resolution | 1080p |
-| `{source}` | Source | BluRay |
-| `{codec}` | Codec | x264 |
-| `{audio}` | Audio codec | DTS |
-| `{hdr}` | HDR type | HDR10 |
-| `{mod}` | Edition modifiers | Extended/Unrated |
-| `{ep_title}` | Episode title | Pilot |
-| `{audio_lang}` | Audio languages (comma-separated) | jpn,eng |
-| `{sub_lang}` | Subtitle languages (comma-separated) | eng |
-| `{channels}` | Max audio channels | 6 |
+| `{title}` | Название фильма/шоу | Breaking Bad |
+| `{dot_title}` | Название с точками | Breaking.Bad |
+| `{season}` | Номер сезона | 1 |
+| `{episode}` | Номер эпизода | 1 |
+| `{ext}` | Расширение без точки | mkv |
+| `{year}` | Год | 2008 |
+| `{quality}` | Полная метка качества (пробелы) | BluRay 1080p x264 |
+| `{dot_quality}` | Метка качества с точками | BluRay.1080p.x264 |
+| `{resolution}` | Разрешение | 1080p |
+| `{source}` | Источник | BluRay |
+| `{codec}` | Кодек | x264 |
+| `{audio}` | Аудиокодек | DTS |
+| `{hdr}` | Тип HDR | HDR10 |
+| `{mod}` | Модификаторы издания | Extended/Unrated |
+| `{ep_title}` | Название эпизода | Pilot |
+| `{audio_lang}` | Языки аудио через запятую | jpn,eng |
+| `{sub_lang}` | Языки субтитров через запятую | eng |
+| `{channels}` | Максимум аудиоканалов | 6 |
 
-Use `:02d` to zero-pad a numeric field, e.g. `{season:02d}`.
+Книги:
 
-## Default templates
-
-| Kind | Template | Example |
+| Поле | Значение | Пример |
 |---|---|---|
-| Movie | `{title} ({year}) {mod}.{ext}` | `The Matrix (1999) .mkv` |
-| Series | `{season:02d}.{episode:02d}. {ep_title}.{ext}` | `01.01. Pilot.mkv` |
+| `{author}` | Первый автор | Виктор Пелевин |
+| `{authors}` | Все авторы через запятую | Виктор Пелевин |
+| `{title}` | Название книги | Чапаев и Пустота |
+| `{series}` | Серия | Романы |
+| `{series_index}` | Номер в серии | 3 |
+| `{year}` | Год | 1996 |
+| `{lang}` / `{language}` | Язык | ru |
+| `{isbn}` | ISBN-13 | 9780306406157 |
+| `{publisher}` | Издатель | АСТ |
+| `{ext}` | Расширение без точки (`fb2.zip` целиком) | fb2 |
 
-## Behaviour notes
+Числовые поля допускают `:02d` для паддинга нулями, например `{season:02d}`.
 
-- **No-clobber rename.** `namer` never overwrites an existing file; the move
-  is atomic (`renameat2(RENAME_NOREPLACE)` or `link+unlink` on filesystems
-  without hard links).
-- **Conservative on ambiguity.** If season/episode cannot be resolved
-  confidently, or providers conflict on them, the file is left in place rather
-  than renamed with a guessed value (`Decision L3`).
-- **Specials** map to season `0` by convention.
-- **Multi-episode** files (`S01E01-02`, `S01E01E02`, `1x01-1x02`) are detected
-  and listed; the rename uses the single episode.
+Неизвестный плейсхолдер либо поле, требуемое шаблоном, но отсутствующее
+у файла, — отказ без переименования.
+
+## Шаблоны по умолчанию
+
+| Вид | Шаблон | Пример |
+|---|---|---|
+| Фильм | `{title} ({year}) {mod}.{ext}` | `The Matrix (1999) .mkv` |
+| Сериал | `{season:02d}.{episode:02d}. {ep_title}.{ext}` | `01.01. Pilot.mkv` |
+| Книга | `{author} - {title} ({year}).{ext}` | `Виктор Пелевин - Чапаев и Пустота (1996).fb2` |
+| Книга в серии | `{author} - {series} - {series_index:02d} - {title}.{ext}` | `Фрэнк Герберт - Хроники - 01 - Дюна.epub` |
+
+## Источники данных для книг
+
+| Формат | Встроенные метаданные | Примечание |
+|---|---|---|
+| `fb2` | `title-info` (название, авторы, серия, дата, язык), `publish-info` (ISBN) | Самый надёжный формат. Автор файла из `document-info` игнорируется. |
+| `fb2.zip` | Первый `*.fb2` внутри архива | Читается в памяти, на диск не распаковывается. |
+| `epub` | OPF: `dc:title`, `dc:creator`, `dc:identifier` (ISBN), `dc:language`, `dc:date`, серия calibre | Переводчики (`trl`) отбрасываются. |
+| `pdf` | XMP (`dc:title`, `dc:creator`) в приоритете, затем Info (`/Title`, `/Author`), затем ISBN из текстового слоя | Заглушки вида `Microsoft Word`, `Untitled` отбрасываются. |
+| `djvu` | Чанки `ANTa`, вывод `djvused` при наличии; иначе текстовый слой | Часто метаданных нет — работает имя файла. |
+
+Канонические значения (автор, название, серия, год, ISBN) берутся из сетевых
+каталогов (OpenLibrary, GoogleBooks) при вызове через библиотечный API
+(`process_books_directory(..., searchers=[...])`, `generate_book_name(...,
+opinions=[...])`). В CLI-режиме используется офлайн-запись с пометкой `local`;
+файл без пригодного названия (короче двух символов) не переименовывается.
+
+## Поведение
+
+- **Без перезаписи.** Переименование атомарно и не перезаписывает существующий
+файл; конфликт разрешается суффиксом `_N`. Составное расширение `fb2.zip`
+сохраняется целиком.
+- **Консерватизм видео.** Сезон/эпизод без уверенного лидерства либо при
+конфликте провайдеров — отказ вместо угадывания (`Decision L3`).
+- **Консерватизм книг.** Нет названия, нет требуемого шаблоном поля
+(`series_index`, `isbn`) либо неизвестный плейсхолдер — отказ.
+- **Спецвыпуски** отображаются на сезон `0` по соглашению.
+- **Мультиэпизодные** файлы (`S01E01-02`, `S01E01E02`, `1x01-1x02`) определяются
+и пропускаются; переименование под первый эпизод запрещено.

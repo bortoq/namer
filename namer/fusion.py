@@ -19,8 +19,9 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from namer.voting import Verdict, Feed
-from namer.voting import FIELD_WEIGHTS, EXPENSIVE_FIELDS
-from namer.voting import _group_feeds, _sort_key, _verdict_for, update_scores
+from namer.voting import FIELD_WEIGHTS
+from namer.voting import _group_feeds, _sort_key, _verdict_for
+from namer.voting import update_scores  # noqa: F401  (legacy re-export)
 from namer.voting import provider_confidence_mean
 
 # Re-exported: fusion is the arbitration entry point but keeps the same

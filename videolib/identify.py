@@ -12,9 +12,8 @@ opt-in step (see :func:`get_video_info`).
 
 from __future__ import annotations
 
-import os
 import re
-from typing import Dict, Optional
+from typing import Dict
 
 from namer.parser import parse_file, title_from_path  # noqa: F401  (re-exported for tests)
 
@@ -119,8 +118,6 @@ def get_video_info(path: str, *, language: str = "en") -> Dict[str, object]:
     if meta.get('is_series') and meta.get('season') is not None and \
             meta.get('episode') and not meta.get('season_assumed'):
         try:
-            from namer.tvmaze import enrich_episode_titles
-            from namer.enricher import enrich_meta
             from namer.providers import local_feeds, online_feeds
             from namer.fusion import fuse
 

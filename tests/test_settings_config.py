@@ -81,6 +81,12 @@ def test_custom_override(tmp_path):
     assert cfg['template_series'] == settings.TEMPLATE_SERIES
 
 
+def test_concurrency_is_capped(tmp_path):
+    p = tmp_path / 'c.ini'
+    p.write_text('[rename]\nmax_concurrent_files = 1000000\n')
+    assert load_config(str(p))['max_concurrent_files'] == 64
+
+
 def test_parsers_edges():
     d = frozenset({'.x'})
     assert parse_extensions('', d) is d

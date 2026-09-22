@@ -364,10 +364,10 @@ def vote(feeds: List[Feed], scores: Optional[Scores] = None) -> Dict[str, Verdic
             fields.update(f.values.keys())
     fields -= _META_FIELDS
     verdicts: Dict[str, Verdict] = {}
-    for field in sorted(fields):
-        v = _verdict_for(feeds, field, scores)
+    for field_name in sorted(fields):
+        v = _verdict_for(feeds, field_name, scores)
         if v is not None:
-            verdicts[field] = v
+            verdicts[field_name] = v
     return verdicts
 
 
@@ -378,15 +378,15 @@ def update_scores(scores: Scores, feeds: List[Feed],
     Only fields that at least two providers weighed in on are tracked
     ('store only what several providers agree on').
     """
-    for field, verdict in verdicts.items():
+    for field_name, verdict in verdicts.items():
         voters = [f.provider for f in feeds
-                  if not f.abstain and f.values.get(field) not in (None, '')]
+                  if not f.abstain and f.values.get(field_name) not in (None, '')]
         if len(voters) < 2:
             continue
         win_set = set(verdict.providers)
         for p in voters:
             entry = scores.setdefault(p, {})
-            entry[field] = entry.get(field, 0.0) + (1.0 if p in win_set else 0.0)
+            entry[field_name] = entry.get(field_name, 0.0) + (1.0 if p in win_set else 0.0)
     return scores
 
 

@@ -35,6 +35,9 @@ def enrich_meta(meta: dict, tmdb_key: str = '', language: str = 'en') -> dict:
         if show_name:
             titles = get_season_episode_titles(show_name, meta['season'], tmdb_key, language)
             if titles:
+                # The lookup resolved the show: the hint may be voted as a
+                # confirmed name (never as an unconfirmed echo).
+                meta['_tmdb_resolved'] = True
                 ep_title = titles.get(meta['episode'], '')
                 if ep_title:
                     meta['ep_title'] = ep_title
@@ -44,9 +47,10 @@ def enrich_meta(meta: dict, tmdb_key: str = '', language: str = 'en') -> dict:
         if show_name:
             # Try to get localized movie title from TMDB
             tmdb_title = enrich_movie_title(show_name, tmdb_key, language)
-            if tmdb_title and tmdb_title != show_name:
+            if tmdb_title:
                 meta['title'] = tmdb_title
                 meta['dot_title'] = re.sub(r'\s+', '.', tmdb_title.strip())
+                meta['_tmdb_resolved'] = True
             # Fill year if missing
             if not meta.get('year'):
                 year = enrich_year(show_name, tmdb_key, language)

@@ -4,8 +4,7 @@ import os
 import re
 from typing import Optional, Tuple
 
-from namer.quality import (parse_quality, QualityInfo,
-                              MODIFIER_NON_FIRST_PATTERN, BLACK_BARS_TAG)
+from namer.quality import MODIFIER_NON_FIRST_PATTERN, BLACK_BARS_TAG
 
 # ── Patterns (adapted from sator/normalizer.py and sator/title.py) ───────
 
@@ -160,7 +159,7 @@ def series_episode_numbers(file_name: str) -> tuple:
 #   Matches 2-3 digit number before quality bracket, end of name, or extension.
 #   Excluded: numbers >=1900 (years) and common resolution widths (480/576/720).
 _EPISODE_FALLBACK = re.compile(
-    r'(?:^|[.\s-])(?P<episode>\d{2,3})(?:\s*v\d+)?(?=\s*[\[\(]|\s*$|\.\w+$|\.\s)',
+    r'(?:^|[.\s-])(?<![xXhH]\.)(?P<episode>\d{2,3})(?:\s*v\d+)?(?=\s*[\[\(]|\s*$|\.\w+$|\.\s)',
 )
 
 # "1.01." or "12.01." format (already-formatted season.episode.)
@@ -198,10 +197,11 @@ _EXT_PATTERN = re.compile(r'\.(?P<ext>[a-zA-Z0-9]+)$')
 # Quality/resolution tokens to strip during title cleaning
 _QUALITY_TOKENS = re.compile(
     r'\b(?:'
-    r'480[ip]|576[ip]|720[ip]|1080[ip]|2160[ip]'
-    r'|UHD|4K'
+    r'(?:480|576|720|1080|2160)[ip](?:10)?'   # 1080p, 1080i, 1080p10 (10-bit)
+    r'|(?:480|576|720|1080|2160)\b'           # bare width: "1080.BluRay" style
+    r'|UHD|4K|PROPER|REPACK'   # release status (scene tags), not modifiers
     r'|[xh]\.?26[45]|HEVC|AV1|VP9|Xvid|Divx|AVC'
-    r'|DD\W?5[. ]1|DDP?5[. ]1'
+    r'|DD\W?[._\s-]?5[. ]1|DDP?[._\s-]?5[. ]1'
     r'|AAC5[. ]1|TrueHD|DTS[ -]HD|DTS|FLAC|AAC|AC3|MP3|PCM|Opus'
     r'|8bit|10bit|8-bit|10-bit'
     r'|HDR10?|Dolby[. ]?Vision|DOVI|DV|HLG'
@@ -209,13 +209,17 @@ _QUALITY_TOKENS = re.compile(
     r'|x265|h\.265'
     r'|848x480|1280x720|1920x1080|3840x2160|4096x2160'
     r'|Remux'
-    r'|MULTi|DUAL[. ]?AUDIO|5[. ]1|7[. ]1|2[. ]0'
+    r'|MULTi|DUAL[. ]?AUDIO|(?:5|7)[. ]1(?:[._\s-]?CH)?'
+    r'|2[. ]0(?:[._\s-]?CH)?|\d{1,2}CH|(?:Dolby[. ]?)?Atmos'
     r')\b', re.IGNORECASE
 )
 
 _SOURCE_TOKENS = re.compile(
     r'\b(?:BluRay|WEB[-_. ]?DL|WEBRip|BDRip|BRRip|HDTV|DVD|DVDR|'
-    r'SCREENER|TELESYNC|TELECINE|WORKPRINT|PDTV|SDTV|TVRip)\b',
+    r'SCREENER|TELESYNC|TELECINE|WORKPRINT|PDTV|SDTV|TVRip|'
+    # Streaming-network tags that prefix WEB-DL/WEBRip ("AMZN.WEB-DL",
+    # "NF.WEBRip") — they are release metadata, never part of a title.
+    r'AMZN|NF|ATVP|DSNP|HMAX|PMP|HULU|iTunes)\b',
     re.IGNORECASE
 )
 
@@ -317,6 +321,26 @@ def extract_year(file_name: str) -> Optional[int]:
     return None
 
 
+# A release token (quality/source/codec/resolution) that a release group
+# may be glued to: "x264-GROUP", "WEB-DL-GROUP", "1080p-GROUP".
+_GROUP_GLUE_TOKEN = re.compile(
+    r'(?:' + _QUALITY_TOKENS.pattern + r'|' + _SOURCE_TOKENS.pattern + r')',
+)
+
+# Trailing release group, attached directly to a release token with any
+# separator ("x264-GROUP", "BluRay.GROUP", "1080p GROUP").  A group glued to
+# a year ("2020-GROUP") needs a dash/underscore: "2020.Remembered" is a title
+# ending, not a group.
+_RELEASE_GROUP_GLUED = re.compile(
+    # Group parts may contain dots ("MkvCage.ws", "YTS.MX") but never dashes
+    # or spaces: "Spider-Man"/"X-Men" tails still never match.
+    r'(?:' + _GROUP_GLUE_TOKEN.pattern + r')[._\s-]+'
+    r'[a-zA-Z0-9À-ɏ]{2,15}(?:\.[a-zA-Z0-9À-ɏ]{2,15}){0,2}$'
+    r'|\b(?:19|20)\d{2}[-_][a-zA-Z0-9À-ɏ]{2,15}(?:\.[a-zA-Z0-9À-ɏ]{2,15}){0,2}$',
+    re.IGNORECASE,
+)
+
+
 def _title_case_uniform_latin(title: str) -> str:
     """Title-case a uniformly-cased Latin title ("MALICE" -> "Malice").
 
@@ -368,6 +392,14 @@ def clean_title(file_name: str) -> str:
         or _YEAR_PATTERN.search(name)
     )
 
+    # Remove release group glued to a release token ("x264-GROUP",
+    # "BluRay-GROUP", "1080p-GROUP", "2020-GROUP").  Runs while the release
+    # tokens are still present so the glue can be seen.  Hyphenated title
+    # words ("Spider-Man", "X-Men") never match: the token before the hyphen
+    # is missing.
+    if has_release_markers:
+        name = _RELEASE_GROUP_GLUED.sub('', name)
+
     # Remove only the last year (release year), keep earlier years like "2001"
     years = list(_YEAR_PATTERN.finditer(name))
     if years:
@@ -390,11 +422,6 @@ def clean_title(file_name: str) -> str:
     # "Extended Family" whose first word coincides with a modifier name).
     if has_release_markers:
         name = MODIFIER_NON_FIRST_PATTERN.sub('', name)
-
-    # Remove release group at end (-GROUP) only if release markers present
-    # Avoids eating legitimate hyphenated words like "Spider-Man", "X-Men".
-    if has_release_markers:
-        name = re.sub(r'[-. ]*-[-. ]*[a-zA-Z0-9À-ɏ]{2,15}$', '', name.strip())
 
     # Remove bracketed / parenthesized groups
     name = re.sub(r'\[.*?\]', '', name)
@@ -532,19 +559,37 @@ def extract_ep_title_from_filename(file_name: str) -> str:
     def _clean_ep_title(raw: str) -> str:
         """Clean an episode title extracted after the marker."""
         s = raw.strip()
+        # Release markers in the raw tail mean the tail is a release block:
+        # the trailing release group / year may then be stripped safely.
+        has_release = bool(
+            _QUALITY_TOKENS.search(raw) or _SOURCE_TOKENS.search(raw)
+            or re.search(r'(?:19|20)\d{2}', raw)
+        )
+        if has_release:
+            # Release group glued to a release token: "x264-GROUP",
+            # "BluRay-GROUP", "1080p-GROUP", "2020-GROUP".
+            s = _RELEASE_GROUP_GLUED.sub('', s)
         s = _QUALITY_TOKENS.sub('', s)
         s = _SOURCE_TOKENS.sub('', s)
         s = re.sub(r'\[.*?\]', '', s)
         s = re.sub(r'\(.*?\)', '', s)
         # A leading 4-digit year (release date) is not part of an ep title.
         s = re.sub(r'^[\s._-]*(?:19|20)\d{2}\b[\s._-]*', '', s)
-        # Preserve leading triple-dot ellipsis (part of episode title)
-        # Replace internal dots/dashes with spaces, but NOT leading ...
+        if has_release:
+            # Trailing year after the title ("Pilot.2020.1080p...") is the
+            # release date, not part of the episode title.
+            s = re.sub(r'[\s._-]+(?:19|20)\d{2}[\s._-]*$', '', s)
+        # Preserve a leading triple-dot ellipsis ONLY when the raw tail really
+        # begins with one ("S01E17...In Translation").  Separator runs can
+        # collapse into "..." after token stripping (".1080p.WEB-DL..." ->
+        # "..."), which is NOT a title ellipsis.
         if s.startswith('...'):
-            suffix = s[3:].lstrip()
-            suffix = re.sub(r'[._-]', ' ', suffix)
-            suffix = re.sub(r'\s+', ' ', suffix).strip()
-            return '...' + suffix if suffix else '...'
+            if raw.lstrip().startswith('...'):
+                suffix = s[3:].lstrip()
+                suffix = re.sub(r'[._-]', ' ', suffix)
+                suffix = re.sub(r'\s+', ' ', suffix).strip()
+                return '...' + suffix if suffix else '...'
+            s = re.sub(r'^\.+', '', s)
         s = re.sub(r'[._-]', ' ', s)
         s = re.sub(r'\s+', ' ', s).strip()
         return s
@@ -578,7 +623,7 @@ def parse_file(file_path: str) -> dict:
         title, dot_title, season, episode, ext, year, quality,
         resolution, source, codec, audio, hdr, mod, is_series.
     """
-    from namer.identify import identify_filename, IdentifyInput,         MediaType, Status
+    from namer.identify import identify_filename, IdentifyInput
 
     basename = os.path.basename(file_path)
     ide = identify_filename(IdentifyInput(filename=basename))

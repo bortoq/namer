@@ -53,11 +53,6 @@ def _numeric_tail_warning(basename: str) -> Optional[IdentificationWarning]:
         return None
     if num in _RESOLUTION_WIDTHS or len(num) >= 4:
         return None
-    first = _first_marker_number(basename)
-    try:
-        second = int(num)
-    except ValueError:
-        return None
     # A plausible adjacent range is handled as a multi-episode file; the
     # remaining case is a numeric episode title.
     return IdentificationWarning(

@@ -25,6 +25,7 @@ _DEFAULT_TEMPLATE_BOOK_SERIES = (
     '{author} - {series} - {series_index:02d} - {title}.{ext}'
 )
 _DEFAULT_MAX_CONCURRENT_FILES = 4
+_MAX_CONCURRENT_FILES = 64
 _DEFAULT_MAX_UNCOMPRESSED_MB = 16
 _DEFAULT_MAX_ENTRIES = 512
 _DEFAULT_MAX_XML_KB = 2048
@@ -158,9 +159,11 @@ def load_config(ini_path: str = '') -> dict:
             'template_book_series': (
                 _get(cfg, 'books', 'template_book_series', '')
                 or _DEFAULT_TEMPLATE_BOOK_SERIES),
-            'max_concurrent_files': parse_positive_int(
-                _get(cfg, 'rename', 'max_concurrent_files', ''),
-                _DEFAULT_MAX_CONCURRENT_FILES),
+            'max_concurrent_files': min(
+                parse_positive_int(
+                    _get(cfg, 'rename', 'max_concurrent_files', ''),
+                    _DEFAULT_MAX_CONCURRENT_FILES),
+                _MAX_CONCURRENT_FILES),
             'max_uncompressed_mb': parse_positive_int(
                 _get(cfg, 'limits', 'max_uncompressed_mb', ''),
                 _DEFAULT_MAX_UNCOMPRESSED_MB),
