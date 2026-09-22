@@ -180,8 +180,6 @@ def extract_epub_query(path: str, budget: Optional[ReadBudget] = None) -> BookQu
         try:
             with zipfile.ZipFile(path, 'r') as z:
                 names = z.namelist()
-                if len(names) > b.max_entries:
-                    return BookQuery(source_format='epub')
                 # total size guard
                 try:
                     total = sum(i.file_size for i in z.infolist())

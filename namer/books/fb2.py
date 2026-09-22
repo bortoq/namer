@@ -11,6 +11,7 @@ from namer.books.detect import is_garbage_text, normalize_isbn
 from namer.books.models import BookQuery, ReadBudget
 
 _FB2_NS = 'http://www.gribuser.ru/xml/fictionbook/2.0'
+_FB2_LINK_NS = 'http://www.w3.org/1999/xlink'
 
 
 def _local(tag: str) -> str:
@@ -71,7 +72,13 @@ def _description_stub(data: bytes, cap: int) -> bytes | None:
         span = blob[m_open.start():m_close.end()]
         if len(span) > cap:
             return None
-        return b'<stub>' + span + b'</stub>'
+        # The description may contain prefixed attributes such as
+        # ``l:href`` on cover images.  The original FictionBook root declares
+        # this namespace, but the synthetic stub does not; preserve the
+        # standard declaration so metadata parsing does not fail with an
+        # ``unbound prefix`` error.
+        return (b'<stub xmlns:l="' + _FB2_LINK_NS.encode('ascii') + b'">'
+                + span + b'</stub>')
     except Exception:
         return None
 
@@ -216,8 +223,6 @@ def extract_fb2zip_query(path: str, budget: Optional[ReadBudget] = None) -> Book
         try:
             if not os.path.isfile(path):
                 return BookQuery(source_format='fb2.zip')
-            if os.path.getsize(path) > b.max_uncompressed:
-                return BookQuery(source_format='fb2.zip')
         except OSError:
             return BookQuery(source_format='fb2.zip')
         try:
@@ -233,14 +238,20 @@ def extract_fb2zip_query(path: str, budget: Optional[ReadBudget] = None) -> Book
                 if inner is None:
                     return BookQuery(source_format='fb2.zip')
                 info = z.getinfo(inner)
-                if info.file_size > b.max_uncompressed:
-                    return BookQuery(source_format='fb2.zip')
+                # Metadata is at the beginning of FB2.  For oversized books
+                # read only enough to build a description stub; do not reject
+                # the whole archive merely because its body is large.
+                large_inner = info.file_size > b.max_xml_bytes * 4
+                read_limit = (b.max_xml_bytes + 1 if large_inner
+                              else info.file_size)
                 with z.open(inner, 'r') as f:
-                    data = f.read(b.max_uncompressed + 1)
-                if len(data) > b.max_uncompressed:
-                    return BookQuery(source_format='fb2.zip')
+                    data = f.read(read_limit)
         except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError):
             return BookQuery(source_format='fb2.zip')
+        if large_inner:
+            stub = _description_stub(data, b.max_xml_bytes)
+            return (parse_fb2_bytes(stub, 'fb2.zip') if stub
+                    else BookQuery(source_format='fb2.zip'))
         return _parse_maybe_large(data, 'fb2.zip', b)
     except Exception:
         return BookQuery(source_format='fb2.zip')

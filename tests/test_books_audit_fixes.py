@@ -1,7 +1,7 @@
 """Regression tests for audit findings (doc/audit.md)."""
 from namer.books.detect import find_isbns_in_text
 from namer.books.epub import parse_container_bytes
-from namer.books.fb2 import extract_fb2_query
+from namer.books.fb2 import extract_fb2_query, _parse_maybe_large
 from namer.books.filename import parse_book_filename
 from namer.books.models import BookQuery
 from namer.books.pdf import extract_pdf_query, parse_xmp_bytes
@@ -79,6 +79,19 @@ def test_large_fb2_parses_via_description_stub():
         os.unlink(path)
 
 
+def test_large_fb2_stub_preserves_link_namespace():
+    from namer.books.models import ReadBudget
+    data = (b'<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" '
+            b'xmlns:l="http://www.w3.org/1999/xlink"><description>'
+            b'<title-info><book-title>Namespaced</book-title>'
+            b'<author><first-name>A</first-name><last-name>B</last-name></author>'
+            b'<coverpage><image l:href="#cover.jpg"/></coverpage>'
+            b'</title-info></description><body>') + b'x' * 2000 + b'</body></FictionBook>'
+    q = _parse_maybe_large(data, 'fb2', ReadBudget(max_xml_bytes=600))
+    assert q.title_hint == 'Namespaced'
+    assert q.authors_hint == ('A B',)
+
+
 def test_pdf_xmp_preferred_over_garbage_info(tmp_path):
     # AUDIT Warning: XMP dc:title/creator must win over garbage Info.
     xmp = (b'<x:xmpmeta><rdf:RDF><rdf:Description>'
@@ -96,6 +109,16 @@ def test_pdf_xmp_preferred_over_garbage_info(tmp_path):
     q = extract_pdf_query(str(p))
     assert q.title_hint == 'XMP Title'
     assert q.authors_hint == ('XMP Author',)
+
+
+def test_large_pdf_metadata_is_not_rejected(tmp_path):
+    p = tmp_path / 'large.pdf'
+    pdf_min = (b'%PDF-1.4\n1 0 obj<</Title (Real Book Title)/Author (Ivan Petrov)'
+               b'/Creator (Acrobat)>>\nstartxref\n%%EOF')
+    p.write_bytes(pdf_min + b'0' * (17 * 1024 * 1024))
+    q = extract_pdf_query(str(p))
+    assert q.title_hint == 'Real Book Title'
+    assert q.authors_hint == ('Ivan Petrov',)
 
 
 def test_pipeline_known_title_and_searchers(tmp_path):

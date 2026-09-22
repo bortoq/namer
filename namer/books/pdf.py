@@ -187,8 +187,6 @@ def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQue
         try:
             if not os.path.isfile(path):
                 return BookQuery(source_format='pdf')
-            if os.path.getsize(path) > b.max_uncompressed:
-                return BookQuery(source_format='pdf')
         except OSError:
             return BookQuery(source_format='pdf')
         info_title, info_author, head_text = _try_pypdf(path)
@@ -196,7 +194,10 @@ def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQue
         if not head_text or not info_title or not info_author:
             try:
                 with open(path, 'rb') as f:
-                    raw = f.read(min(b.max_uncompressed, 2 * 1024 * 1024))
+                    probe_size = min(b.max_uncompressed, 2 * 1024 * 1024)
+                    head = f.read(probe_size // 2)
+                    f.seek(max(0, os.path.getsize(path) - probe_size // 2))
+                    raw = head + f.read(probe_size // 2)
             except OSError:
                 raw = b''
         if raw:

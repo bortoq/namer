@@ -61,6 +61,17 @@ def test_epub_file(tmp_path):
     assert extract_epub_query('').is_empty()
 
 
+def test_epub_many_resources_does_not_hide_metadata(tmp_path):
+    p = tmp_path / 'many.epub'
+    with zipfile.ZipFile(str(p), 'w') as z:
+        z.writestr('META-INF/container.xml', CONT)
+        z.writestr('OEBPS/content.opf', OPF)
+        for i in range(600):
+            z.writestr(f'OEBPS/Images/{i}.jpg', b'x')
+    q = extract_epub_query(str(p))
+    assert q.title_hint == 'Дюна'
+
+
 def test_epub_no_opf(tmp_path):
     p = tmp_path / 'e.epub'
     with zipfile.ZipFile(str(p), 'w') as z:
