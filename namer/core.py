@@ -45,6 +45,22 @@ def _apply_char_replacements(name: str) -> str:
 _FORBIDDEN_RE = re.compile('[' + re.escape(''.join(settings.INVALID_CHARS)) + ']')
 
 
+def _book_lookup_needed(query) -> bool:
+    """Avoid remote lookups when embedded metadata already identifies a book."""
+    try:
+        title = (query.title_hint or '').strip().lower()
+        authors = tuple(a.strip().lower() for a in (query.authors_hint or ()) if a)
+        if not title or not authors:
+            return True
+        compact = re.sub(r'[^a-zа-яё0-9]+', '', title)
+        # Common scan/export placeholders are not bibliographic identities.
+        if compact in {'titul', 'title', 'untitled', 'converted', 'scan', 'document'}:
+            return True
+        return False
+    except Exception:
+        return True
+
+
 def _sanitize_filename(name: str) -> str:
     """Replace filesystem-invalid characters with safe alternatives.
 
@@ -144,7 +160,7 @@ def generate_new_name(
                 from namer.books.identify import build_query
                 query = build_query(file_path, known_title, known_author)
                 collected = []
-                if not query.is_empty():
+                if not query.is_empty() and _book_lookup_needed(query):
                     for search in book_searchers:
                         try:
                             found = search(query)

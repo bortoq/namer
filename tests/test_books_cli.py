@@ -95,3 +95,18 @@ def test_core_dispatcher_uses_book_searchers(tmp_path):
     new, meta = generate_new_name(str(p), book_searchers=[searcher])
     assert new == 'Author - Canonical PDF (2020).pdf'
     assert meta['_skip'] is False
+
+
+def test_core_skips_remote_lookup_when_embedded_book_identity_is_complete(tmp_path):
+    p = tmp_path / 'book.fb2'
+    p.write_bytes(_fb2('Embedded title', 'Known', 'Author'))
+    calls = []
+
+    def searcher(query):
+        calls.append(query)
+        return []
+
+    new, meta = generate_new_name(str(p), book_searchers=[searcher])
+    assert new == 'Known Author - Embedded title.fb2'
+    assert meta['_skip'] is False
+    assert calls == []
