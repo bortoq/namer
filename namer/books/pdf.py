@@ -1,9 +1,13 @@
 """PDF extractor -> BookQuery. Optional pypdf, else raw Info-scan. Never raises."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
+import urllib.request
+import uuid
+from io import BytesIO
 from typing import Optional
 
 from namer.books.detect import find_isbns_in_text, is_garbage_text
@@ -193,6 +197,76 @@ def _try_pdftotext(path: str) -> str:
     return ''
 
 
+def _first_pages_pdf(path: str, pages: int = 3) -> bytes:
+    """Build a small PDF containing only the first *pages* pages."""
+    try:
+        import importlib
+        mod = importlib.import_module('pypdf')
+        reader = mod.PdfReader(path)
+        writer = mod.PdfWriter()
+        for page in list(reader.pages)[:pages]:
+            writer.add_page(page)
+        out = BytesIO()
+        writer.write(out)
+        return out.getvalue()
+    except Exception:
+        return b''
+
+
+def _multipart(fields: dict, name: str, content: bytes,
+               filename: str, content_type: str) -> tuple:
+    boundary = '----namer-' + uuid.uuid4().hex
+    chunks = []
+    for key, value in fields.items():
+        chunks.extend([
+            f'--{boundary}\r\n'.encode(),
+            f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(),
+            str(value).encode(), b'\r\n',
+        ])
+    chunks.extend([
+        f'--{boundary}\r\n'.encode(),
+        (f'Content-Disposition: form-data; name="{name}"; '
+         f'filename="{filename}"\r\n').encode(),
+        f'Content-Type: {content_type}\r\n\r\n'.encode(),
+        content, b'\r\n', f'--{boundary}--\r\n'.encode(),
+    ])
+    return b''.join(chunks), boundary
+
+
+def _try_ocr_space(path: str) -> str:
+    """OCR first three PDF pages through OCR.space Engine 3.
+
+    Disabled unless OCR_SPACE_API_KEY is configured, so ordinary offline
+    runs never upload personal documents by accident.
+    """
+    try:
+        api_key = os.environ.get('OCR_SPACE_API_KEY', '').strip()
+        if not api_key:
+            return ''
+        content = _first_pages_pdf(path, 3)
+        if not content:
+            return ''
+        body, boundary = _multipart(
+            {'apikey': api_key, 'language': 'auto', 'OCREngine': '3',
+             'filetype': 'PDF', 'isOverlayRequired': 'false',
+             'scale': 'true'},
+            'file', content, 'first-pages.pdf', 'application/pdf')
+        req = urllib.request.Request(
+            'https://api.ocr.space/parse/image', data=body,
+            headers={'Content-Type': f'multipart/form-data; boundary={boundary}',
+                     'User-Agent': 'namer/0.1'}, method='POST')
+        with urllib.request.urlopen(req, timeout=90) as response:
+            payload = response.read(2 * 1024 * 1024)
+        data = json.loads(payload.decode('utf-8', 'replace'))
+        text = []
+        for result in data.get('ParsedResults') or []:
+            if isinstance(result, dict) and result.get('ParsedText'):
+                text.append(str(result['ParsedText']))
+        return '\n'.join(text)[:30000]
+    except Exception:
+        return ''
+
+
 def _text_title_authors(text: str) -> tuple:
     """Best-effort title/author from a text PDF's opening lines."""
     try:
@@ -233,6 +307,8 @@ def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQue
         info_title, info_author, head_text = _try_pypdf(path)
         if not head_text or not head_text.strip():
             head_text = _try_pdftotext(path)
+        if not head_text or not head_text.strip():
+            head_text = _try_ocr_space(path)
         text_hint = head_text if head_text and head_text.strip() else ''
         raw = b''
         if not head_text or not info_title or not info_author:

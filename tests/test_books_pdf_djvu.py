@@ -54,6 +54,20 @@ def test_pdf_isbn_from_text(tmp_path):
     assert q.isbn_hint == '9780306406157'
 
 
+def test_pdf_ocr_text_is_used_when_local_text_is_empty(tmp_path, monkeypatch):
+    import namer.books.pdf as pdf
+
+    p = tmp_path / 'scan.pdf'
+    p.write_bytes(b'%PDF-1.4 scan')
+    monkeypatch.setattr(pdf, '_try_pypdf', lambda path: ('', '', ''))
+    monkeypatch.setattr(pdf, '_try_pdftotext', lambda path: '')
+    monkeypatch.setattr(pdf, '_try_ocr_space',
+                        lambda path: 'THE BOOK TITLE\nJane Author\n')
+    q = extract_pdf_query(str(p))
+    assert q.title_hint == 'THE BOOK TITLE'
+    assert q.authors_hint == ('Jane Author',)
+
+
 def test_pdf_edges():
     assert extract_pdf_query('').is_empty()
     assert extract_pdf_query(None).is_empty()

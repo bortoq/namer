@@ -38,6 +38,10 @@ namer -v
 
 # Попробовать найти метаданные книг в OpenLibrary и Google Books
 namer --enrich-books -d /path/to/books -n
+
+# Распознать первые три страницы сканированных PDF через OCR.space Engine 3
+export OCR_SPACE_API_KEY=your_api_key
+namer --enrich-books -d /path/to/books -n -v
 ```
 
 Полный справочник опций: `doc/usage.md`.

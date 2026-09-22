@@ -63,12 +63,19 @@ namer --tmdb-key YOUR_KEY
 # Поиск метаданных PDF/книг в каталогах
 namer --enrich-books -d /path/to/books -n
 
+# OCR сканированных PDF: нужен ключ OCR.space
+export OCR_SPACE_API_KEY=your_api_key
+namer --enrich-books -d /path/to/books -n -v
+
 # Русские названия шоу/эпизодов
 namer -l ru
 
 # Обработать заданный каталог
 namer -d /path/to/videos
 ```
+
+При заданном `OCR_SPACE_API_KEY` программа отправляет в OCR.space Engine 3
+только первые три страницы PDF. Полный файл наружу не отправляется.
 
 ## Поля шаблонов
 
