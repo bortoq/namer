@@ -258,18 +258,21 @@ def _multipart(fields: dict, name: str, content: bytes,
 def _try_ocr_space(path: str) -> str:
     """OCR first three PDF pages through OCR.space Engine 3.
 
-    Uses OCR.space's documented public demo key by default.  A personal key
-    can be supplied through OCR_SPACE_API_KEY to avoid shared-key limits.
+    Uses OCR.space's documented public demo key with Engine 2 by default.
+    A personal key can be supplied through OCR_SPACE_API_KEY to enable the
+    more expensive Engine 3 without the shared demo-key limit.
     """
     try:
         if os.environ.get('NAMER_DISABLE_OCR') == '1':
             return ''
-        api_key = os.environ.get('OCR_SPACE_API_KEY', '').strip() or 'helloworld'
+        configured_key = os.environ.get('OCR_SPACE_API_KEY', '').strip()
+        api_key = configured_key or 'helloworld'
+        engine = '3' if configured_key else '2'
         content = _first_pages_pdf(path, 3)
         if not content:
             return ''
         body, boundary = _multipart(
-            {'language': 'auto', 'OCREngine': '3',
+            {'language': 'auto', 'OCREngine': engine,
              'filetype': 'PDF', 'isOverlayRequired': 'false',
              'scale': 'true'},
             'file', content, 'first-pages.pdf', 'application/pdf')
@@ -381,6 +384,13 @@ def _text_title_authors(text: str) -> tuple:
             title = re.sub(r'\s+', ' ', title).strip()
             if title:
                 return title, split_authors(lines[0])
+        if len(lines) >= 3 and _PERSON_LINE_RE.fullmatch(lines[0]):
+            title = ' '.join(lines[1:4])
+            title = re.sub(r'\b\d+(?:ST|ND|RD|TH)\s+EDITION\b', '',
+                           title, flags=re.IGNORECASE)
+            title = re.sub(r'\s+', ' ', title).strip()
+            if title:
+                return title, (lines[0],)
         # OCR covers often put a subtitle/tagline first, then a title on
         # several lines, and the author below it (e.g. Russian editions of
         # ``How Linux Works``). Find the first plausible person line and use
@@ -415,7 +425,8 @@ def _metadata_title_is_placeholder(title: str, path: str) -> bool:
         filename_value = re.sub(r'[^a-zа-яё0-9]+', '', stem.lower())
         if value == filename_value:
             return True
-        return value in {'titul', 'title', 'untitled', 'converted', 'scan', 'document'}
+        return (value in {'titul', 'title', 'untitled', 'converted', 'scan', 'document'}
+                or value.startswith('titul'))
     except Exception:
         return False
 
@@ -479,7 +490,7 @@ def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQue
             text_title, text_authors = _text_title_authors(text_hint)
             if text_title and (not title or _metadata_title_is_placeholder(title, path)):
                 title = text_title
-            if not authors:
+            if not authors or not any(_PERSON_LINE_RE.fullmatch(a) for a in authors):
                 authors = text_authors
         return BookQuery(
             title_hint=title, authors_hint=authors, isbn_hint=isbn,

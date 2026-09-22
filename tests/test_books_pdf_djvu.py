@@ -47,6 +47,14 @@ def test_ocr_cover_skips_tagline_and_finds_author_below_title():
     assert authors == ('Брайан Уорд',)
 
 
+def test_ocr_cover_author_before_multiline_title():
+    title, authors = _text_title_authors(
+        'Марх Симан\nКод, который\nумещается\nв голове\nЭвристики\n'
+    )
+    assert title == 'Код, который умещается в голове'
+    assert authors == ('Марх Симан',)
+
+
 def test_pdf_garbage_filtered(tmp_path):
     p = tmp_path / 'g.pdf'
     p.write_bytes(b'%PDF-1.4\n1 0 obj<</Title (Untitled)/Author (Microsoft Word)>>\n%%EOF')
@@ -91,6 +99,21 @@ def test_pdf_ocr_replaces_filename_metadata(tmp_path, monkeypatch):
     assert q.authors_hint == ('Брайан Уорд',)
 
 
+def test_pdf_ocr_replaces_placeholder_author(tmp_path, monkeypatch):
+    import namer.books.pdf as pdf
+
+    p = tmp_path / 'mostipan - titul.indd.pdf'
+    p.write_bytes(b'%PDF-1.4 scan')
+    monkeypatch.setattr(pdf, '_try_pypdf',
+                        lambda path: ('titul.indd', 'mostipan', ''))
+    monkeypatch.setattr(pdf, '_try_pdftotext', lambda path: '')
+    monkeypatch.setattr(pdf, '_try_ocr_space',
+                        lambda path: 'Марх Симан\nКод, который\nумещается\nв голове')
+    q = extract_pdf_query(str(p))
+    assert q.title_hint == 'Код, который умещается в голове'
+    assert q.authors_hint == ('Марх Симан',)
+
+
 def test_umi_ocr_local_http_adapter(monkeypatch):
     import json
     import namer.books.pdf as pdf
@@ -133,11 +156,13 @@ def test_ocr_space_uses_public_demo_key_without_configuration(monkeypatch):
     def fake_urlopen(request, timeout=0):
         headers = {k.lower(): v for k, v in request.header_items()}
         seen['key'] = headers.get('apikey')
+        seen['engine2'] = b'name="OCREngine"\r\n\r\n2' in request.data
         return Response()
 
     monkeypatch.setattr(pdf.urllib.request, 'urlopen', fake_urlopen)
     assert pdf._try_ocr_space('scan.pdf') == 'Title'
     assert seen['key'] == 'helloworld'
+    assert seen['engine2'] is True
 
 
 def test_pdf_edges():
