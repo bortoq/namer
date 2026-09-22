@@ -26,7 +26,6 @@ namer [TITLE] [options]
 | `-p PATTERN`, `--pattern` | Пользовательский шаблон (см. *Поля шаблонов*). |
 | `-n`, `--dry-run` | Предпросмотр без переименования. |
 | `--tmdb-key KEY` | Ключ TMDB; включает обогащение названий эпизодов и года. |
-| `--enrich-books` | Искать метаданные книг в OpenLibrary и Google Books (opt-in). |
 | `-l CODE`, `--language CODE` | Язык названий шоу/эпизодов (`en`, `ru`, `de`, ...). По умолчанию `en`. |
 | `-d DIR`, `--directory DIR` | Обработать `DIR` вместо текущего каталога. |
 | `-v`, `--verbose` | Подробный вывод (пути подкаталогов). |
@@ -61,11 +60,11 @@ namer -n
 namer --tmdb-key YOUR_KEY
 
 # Поиск метаданных PDF/книг в каталогах
-namer --enrich-books -d /path/to/books -n
+namer -d /path/to/books -n
 
 # OCR сканированных PDF: нужен ключ OCR.space
 export OCR_SPACE_API_KEY=your_api_key
-namer --enrich-books -d /path/to/books -n -v
+namer -d /path/to/books -n -v
 
 # Русские названия шоу/эпизодов
 namer -l ru

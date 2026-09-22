@@ -63,10 +63,6 @@ def build_parser() -> argparse.ArgumentParser:
         help='TMDB API key for episode title / year enrichment',
     )
     p.add_argument(
-        '--enrich-books', action='store_true',
-        help='Use OpenLibrary and Google Books to resolve book metadata',
-    )
-    p.add_argument(
         '-V', '--version', action='version',
         version=f'namer {__version__}',
     )
@@ -134,10 +130,8 @@ def main(argv: list = None) -> int:
         return 1
 
     try:
-        book_searchers = None
-        if args.enrich_books:
-            from namer.books.providers import search_googlebooks, search_openlibrary
-            book_searchers = [search_openlibrary, search_googlebooks]
+        from namer.books.providers import search_googlebooks, search_openlibrary
+        book_searchers = [search_openlibrary, search_googlebooks]
         renamed, total, errors = process_directory(
             directory=directory,
             known_title=known,

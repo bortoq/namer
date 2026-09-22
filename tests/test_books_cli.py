@@ -75,8 +75,10 @@ def test_parser_has_author_flag():
     assert args.author == 'X'
 
 
-def test_parser_has_book_enrichment_flag():
-    assert build_parser().parse_args(['--enrich-books']).enrich_books is True
+def test_parser_does_not_have_obsolete_book_enrichment_flag():
+    import pytest
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(['--enrich-books'])
 
 
 def test_core_dispatcher_uses_book_searchers(tmp_path):
