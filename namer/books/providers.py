@@ -6,7 +6,10 @@ urllib with a short timeout; callers may inject a stub.
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
+import time
 import urllib.parse
 import urllib.request
 from typing import Callable, Optional
@@ -15,6 +18,56 @@ from namer.books.detect import normalize_isbn
 from namer.books.models import BookOpinion, BookQuery, BookRecord
 
 Fetcher = Callable[[str], object]
+
+_CACHE_TTL = 30 * 24 * 60 * 60
+_CACHE_LOCK = threading.Lock()
+_CACHE = None
+
+
+def _cache_path() -> str:
+    root = os.environ.get('XDG_CACHE_HOME') or os.path.join(
+        os.path.expanduser('~'), '.cache')
+    return os.path.join(root, 'namer', 'book-providers.json')
+
+
+def _cached_fetch(url: str, timeout: float):
+    """Fetch JSON with a small TTL cache; failures are never cached."""
+    global _CACHE
+    now = time.time()
+    path = _cache_path()
+    with _CACHE_LOCK:
+        if _CACHE is None:
+            try:
+                with open(path, encoding='utf-8') as fh:
+                    _CACHE = json.load(fh)
+            except (OSError, ValueError, TypeError):
+                _CACHE = {}
+        item = _CACHE.get(url)
+        if isinstance(item, dict) and now - float(item.get('time', 0)) < _CACHE_TTL:
+            return item.get('data')
+    req = urllib.request.Request(url, headers={'User-Agent': 'namer/0.1'})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read(512 * 1024)
+        data = json.loads(raw.decode('utf-8', 'replace'))
+    except Exception:
+        return None
+    with _CACHE_LOCK:
+        _CACHE[url] = {'time': now, 'data': data}
+        # Bound the file and write atomically so parallel workers cannot
+        # leave a truncated cache behind.
+        if len(_CACHE) > 2000:
+            for old in sorted(_CACHE, key=lambda key: _CACHE[key].get('time', 0))[:500]:
+                _CACHE.pop(old, None)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump(_CACHE, fh, ensure_ascii=False)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+    return data
 
 
 def _title_variants(query: BookQuery) -> list:
@@ -35,13 +88,7 @@ def _title_variants(query: BookQuery) -> list:
 
 def _default_fetch(url: str, timeout: float = 5.0):
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'namer/0.1'})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read(512 * 1024)
-        try:
-            return json.loads(raw.decode('utf-8', 'replace'))
-        except (ValueError, UnicodeDecodeError):
-            return None
+        return _cached_fetch(url, timeout)
     except Exception:
         return None
 

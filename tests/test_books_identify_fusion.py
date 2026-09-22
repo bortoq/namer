@@ -1,5 +1,5 @@
 """Identify + providers (mocked) + fusion."""
-from namer.books.fusion import fuse_opinions
+from namer.books.fusion import candidate_score, fuse_opinions
 from namer.books.identify import build_query, identify_book, merge_queries
 from namer.books.models import BookOpinion, BookQuery, BookRecord
 from namer.books.providers import search_googlebooks, search_openlibrary
@@ -69,6 +69,14 @@ def test_fusion_refuses_weak_single():
     assert fuse_opinions(None) is None
 
 
+def test_candidate_score_prefers_matching_title_and_author():
+    query = BookQuery(title_hint='Dune', authors_hint=('Frank Herbert',))
+    good = _rec('Dune', ('Frank Herbert',))
+    bad = _rec('Foundation', ('Isaac Asimov',))
+    assert candidate_score(query, good) > candidate_score(query, bad)
+    assert candidate_score(query, good) >= 0.9
+
+
 def test_providers_mocked_isbn():
     q = BookQuery(title_hint='X', isbn_hint='9780306406157')
     doc = {'title': 'Real', 'key': '/books/OL1M', 'publish_date': '2001'}
@@ -87,3 +95,22 @@ def test_providers_bad_network():
     assert search_googlebooks(q, fetcher=lambda u: 'junk') == []
     assert search_openlibrary(BookQuery()) == []
     assert search_googlebooks(BookQuery()) == []
+
+
+def test_default_provider_fetch_is_cached(tmp_path, monkeypatch):
+    import namer.books.providers as providers
+
+    calls = []
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path))
+    monkeypatch.setattr(providers, '_CACHE', None)
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, _limit): return b'{"ok": true}'
+
+    monkeypatch.setattr(providers.urllib.request, 'urlopen',
+                        lambda *args, **kwargs: (calls.append(1) or Response()))
+    assert providers._default_fetch('https://example.test/a') == {'ok': True}
+    assert providers._default_fetch('https://example.test/a') == {'ok': True}
+    assert len(calls) == 1

@@ -649,6 +649,7 @@ def process_directory(
     # ── Pass 2 (sequential): renames; each file's row shows its status ──
     renamed = 0
     errors = 0
+    skipped = []
     reserved: set = set()  # claimed destinations, avoids intra-batch clashes
     interrupted = False
 
@@ -667,6 +668,10 @@ def process_directory(
                 rel = os.path.relpath(fpath, directory)
                 if rel != basename:
                     print(f'[{rel}]', file=sys.stderr)
+                details = {k: v for k, v in meta.items()
+                           if not k.startswith('_') and v not in ('', None, False)}
+                if details:
+                    print(f'  metadata: {details}', file=sys.stderr)
 
             # Determine effective template (same logic as generate_new_name)
             if pattern:
@@ -690,10 +695,20 @@ def process_directory(
 
             if skip_reason:
                 handle.finish('skipped')
+                skipped.append((basename, skip_reason))
+                if verbose:
+                    for evidence in meta.get('_book_identity', object()).evidence \
+                            if hasattr(meta.get('_book_identity'), 'evidence') else ():
+                        print(f'  evidence: {evidence}', file=sys.stderr)
+                    print(f'  skip reason: {skip_reason}', file=sys.stderr)
                 continue
 
             if not new_name or new_name == basename:
                 handle.finish('unchanged')
+                if verbose:
+                    for evidence in meta.get('_book_identity', object()).evidence \
+                            if hasattr(meta.get('_book_identity'), 'evidence') else ():
+                        print(f'  evidence: {evidence}', file=sys.stderr)
                 continue
 
             handle.unpark('renaming')
@@ -705,6 +720,10 @@ def process_directory(
                 if resolved_names:
                     handle.set_new_name(resolved_names[-1])  # show real dest
                 handle.finish('renamed')
+                if verbose:
+                    for evidence in meta.get('_book_identity', object()).evidence \
+                            if hasattr(meta.get('_book_identity'), 'evidence') else ():
+                        print(f'  evidence: {evidence}', file=sys.stderr)
             else:
                 errors += 1
                 handle.finish('error')
@@ -715,6 +734,12 @@ def process_directory(
         raise
 
     progress.close()
+
+    if skipped:
+        print(f'Skipped {len(skipped)} media file{"s" if len(skipped) != 1 else ""}:',
+              file=sys.stderr)
+        for basename, reason in skipped:
+            print(f'  {basename}: {reason}', file=sys.stderr)
 
     if interrupted:
         print('\nInterrupted during rename pass.', file=sys.stderr)

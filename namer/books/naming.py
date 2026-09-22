@@ -6,7 +6,7 @@ import re
 import string
 from typing import Optional
 
-from namer.books.fusion import fuse_opinions
+from namer.books.fusion import candidate_score, fuse_opinions
 from namer.books.identify import identify_book
 from namer.books.models import BookIdentity, BookRecord
 from namer.settings import TEMPLATE_BOOK, TEMPLATE_BOOK_SERIES
@@ -155,7 +155,7 @@ def generate_book_name(file_path: str, pattern: str = '',
         ident = identify_book(file_path, known_title, known_author)
         record: Optional[BookRecord] = None
         try:
-            fused = fuse_opinions(opinions) if opinions else None
+            fused = fuse_opinions(opinions, ident.query) if opinions else None
         except Exception:
             fused = None
         if fused is not None and len((fused.title or '').strip()) >= 2:
@@ -165,6 +165,16 @@ def generate_book_name(file_path: str, pattern: str = '',
         if record is None:
             ident.status = 'unresolved' if ident.status != 'ambiguous' else ident.status
             return basename, ident
+        if opinions:
+            for opinion in opinions:
+                try:
+                    score = candidate_score(ident.query, opinion.record)
+                    ident.evidence.append(
+                        f"{opinion.provider}: {opinion.record.title}"
+                        f" [{score:.2f}, confidence {float(opinion.confidence):.2f}]"
+                    )
+                except Exception:
+                    continue
         # known_* overrides display values (explicit user truth)
         try:
             kt = (known_title or '').strip()
@@ -185,6 +195,9 @@ def generate_book_name(file_path: str, pattern: str = '',
         if not rendered:
             return basename, ident
         ident.record = record
+        ident.evidence.append(
+            f"selected: {record.provider} [{float(record.confidence):.2f}]"
+        )
         ident.title = record.title
         ident.authors = list(record.authors or [])
         ident.series = record.series or ''

@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from namer.books.models import BookQuery
+
 
 def _norm_title(t: str) -> str:
     try:
@@ -23,10 +25,59 @@ def _norm_author(a: str) -> str:
         return ''
 
 
-def fuse_opinions(opinions: list):
+def candidate_score(query: BookQuery, record) -> float:
+    """Score a catalogue record against local hints, in [0, 1]."""
+    try:
+        if not isinstance(query, BookQuery) or record is None:
+            return 0.0
+        isbn_q = re.sub(r'[^0-9Xx]', '', query.isbn_hint or '')
+        isbn_r = re.sub(r'[^0-9Xx]', '', record.isbn13 or '')
+        if isbn_q and isbn_r and isbn_q == isbn_r:
+            return 1.0
+        title_q = _norm_title(query.title_hint)
+        title_r = _norm_title(record.title)
+        if not title_q or not title_r:
+            return 0.0
+        q_words, r_words = set(title_q.split()), set(title_r.split())
+        overlap = len(q_words & r_words) / max(1, len(q_words | r_words))
+        containment = 1.0 if title_q in title_r or title_r in title_q else 0.0
+        score = max(overlap, containment * 0.9)
+        if query.authors_hint and record.authors:
+            q_auth = {_norm_author(a) for a in query.authors_hint if a}
+            r_auth = {_norm_author(a) for a in record.authors if a}
+            if q_auth & r_auth:
+                score += 0.25
+        if query.year_hint and record.year:
+            score += 0.08 if query.year_hint == record.year else -0.08
+        return max(0.0, min(0.99, score))
+    except Exception:
+        return 0.0
+
+
+def rank_opinions(query: BookQuery, opinions: list) -> list:
+    """Return provider opinions ranked by agreement with local hints."""
+    ranked = []
+    for opinion in opinions or []:
+        try:
+            score = candidate_score(query, opinion.record)
+            if score >= 0.45 or (query.has_isbn() and score >= 0.9):
+                ranked.append((score, opinion))
+        except Exception:
+            continue
+    ranked.sort(key=lambda item: (item[0], float(item[1].confidence or 0.0)), reverse=True)
+    return [opinion for _score, opinion in ranked]
+
+
+def fuse_opinions(opinions: list, query: BookQuery = None):
     """Winner-take-all with agreement gate. None on miss/conflict. Never raises."""
     try:
         ops = [o for o in (opinions or []) if o is not None and o.record is not None]
+        if query is not None and not query.is_empty():
+            ranked = rank_opinions(query, ops)
+            # Keep the historical strong-provider fallback when local files
+            # contain no usable title hint (for example a binary PDF).
+            if ranked:
+                ops = ranked
         if not ops:
             return None
         # 1) ISBN agreement (strongest): any shared normalized ISBN-13
