@@ -35,6 +35,9 @@ namer -n
 
 # Подробный вывод
 namer -v
+
+# Попробовать найти метаданные книг в OpenLibrary и Google Books
+namer --enrich-books -d /path/to/books -n
 ```
 
 Полный справочник опций: `doc/usage.md`.

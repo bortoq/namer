@@ -6,6 +6,7 @@ urllib with a short timeout; callers may inject a stub.
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
 import urllib.request
 from typing import Callable, Optional
@@ -14,6 +15,22 @@ from namer.books.detect import normalize_isbn
 from namer.books.models import BookOpinion, BookQuery, BookRecord
 
 Fetcher = Callable[[str], object]
+
+
+def _title_variants(query: BookQuery) -> list:
+    """Return bounded catalogue-search variants for dirty file-name hints."""
+    try:
+        raw = (query.title_hint or '').strip()
+        if len(raw) < 2:
+            return []
+        variants = [raw]
+        clean = re.sub(r'[._-]+', ' ', raw)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        if clean and clean.lower() != raw.lower():
+            variants.append(clean)
+        return variants[:2]
+    except Exception:
+        return []
 
 
 def _default_fetch(url: str, timeout: float = 5.0):
@@ -129,21 +146,25 @@ def search_openlibrary(query: BookQuery, fetcher: Optional[Fetcher] = None) -> l
                 if len(rec.title) >= 2:
                     return [BookOpinion('openlibrary', rec, 0.98)]
         # 2) title + author search
-        title = (query.title_hint or '').strip()
-        if len(title) < 2:
+        variants = _title_variants(query)
+        if not variants:
             return []
-        try:
-            params = {'title': title, 'limit': '5'}
-            if query.authors_hint:
-                params['author'] = query.authors_hint[0]
-            url = 'https://openlibrary.org/search.json?' + urllib.parse.urlencode(params)
-            data = fetch(url)
-        except Exception:
-            return []
-        if not isinstance(data, dict):
-            return []
-        docs = data.get('docs')
-        if not isinstance(docs, list):
+        docs = []
+        for title in variants:
+            try:
+                params = {'title': title, 'limit': '5'}
+                if query.authors_hint:
+                    params['author'] = query.authors_hint[0]
+                url = ('https://openlibrary.org/search.json?'
+                       + urllib.parse.urlencode(params))
+                data = fetch(url)
+            except Exception:
+                continue
+            if isinstance(data, dict) and isinstance(data.get('docs'), list):
+                docs = data['docs']
+                if docs:
+                    break
+        if not docs:
             return []
         out: list = []
         for doc in docs[:5]:
@@ -194,19 +215,29 @@ def search_googlebooks(query: BookQuery, fetcher: Optional[Fetcher] = None) -> l
         isbn = normalize_isbn(query.isbn_hint or '')
         if isbn and len(isbn) == 13:
             q = f'isbn:{isbn}'
+            try:
+                url = ('https://www.googleapis.com/books/v1/volumes?'
+                       + urllib.parse.urlencode({'q': q, 'maxResults': '5'}))
+                data = fetch(url)
+            except Exception:
+                data = None
         else:
-            title = (query.title_hint or '').strip()
-            if len(title) < 2:
+            variants = _title_variants(query)
+            if not variants:
                 return []
-            q = f'intitle:{title}'
-            if query.authors_hint:
-                q += f'+inauthor:{query.authors_hint[0]}'
-        try:
-            url = ('https://www.googleapis.com/books/v1/volumes?'
-                   + urllib.parse.urlencode({'q': q, 'maxResults': '5'}))
-            data = fetch(url)
-        except Exception:
-            return []
+            data = None
+            for title in variants:
+                q = f'intitle:{title}'
+                if query.authors_hint:
+                    q += f'+inauthor:{query.authors_hint[0]}'
+                try:
+                    url = ('https://www.googleapis.com/books/v1/volumes?'
+                           + urllib.parse.urlencode({'q': q, 'maxResults': '5'}))
+                    data = fetch(url)
+                except Exception:
+                    continue
+                if isinstance(data, dict) and data.get('items'):
+                    break
         if not isinstance(data, dict):
             return []
         items = data.get('items')

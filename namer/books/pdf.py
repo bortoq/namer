@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from typing import Optional
 
 from namer.books.detect import find_isbns_in_text, is_garbage_text
@@ -178,6 +179,46 @@ def _try_pypdf(path: str) -> tuple:
         return '', '', ''
 
 
+def _try_pdftotext(path: str) -> str:
+    """Extract the first pages with the optional pdftotext utility."""
+    try:
+        result = subprocess.run(
+            ['pdftotext', '-f', '1', '-l', '3', '-layout', path, '-'],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if result.returncode == 0:
+            return (result.stdout or '')[:30000]
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        pass
+    return ''
+
+
+def _text_title_authors(text: str) -> tuple:
+    """Best-effort title/author from a text PDF's opening lines."""
+    try:
+        lines = [re.sub(r'\s+', ' ', line).strip()
+                 for line in (text or '').splitlines()]
+        lines = [line for line in lines if 2 <= len(line) <= 240]
+        if not lines or is_garbage_text(lines[0]):
+            return '', ()
+        # Covers often put an all-caps author with an initial before an
+        # all-caps title (e.g. ``CHRISTOPHER W. TOTTEN``).  In that layout
+        # the first line is the author, not the title.
+        if (len(lines) >= 2 and re.search(r'\b[A-Z]\.', lines[0])
+                and lines[0].upper() == lines[0]):
+            title = ' '.join(lines[1:4])
+            title = re.sub(r'\b\d+(?:ST|ND|RD|TH)\s+EDITION\b', '',
+                           title, flags=re.IGNORECASE)
+            title = re.sub(r'\s+', ' ', title).strip()
+            if title:
+                return title, split_authors(lines[0])
+        title = lines[0]
+        authors = split_authors(lines[1]) if len(lines) > 1 else ()
+        return title, authors
+    except Exception:
+        return '', ()
+
+
 def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQuery:
     """PDF -> query. ISBN from text wins; Info/XMP only when human. Never raises."""
     try:
@@ -190,6 +231,9 @@ def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQue
         except OSError:
             return BookQuery(source_format='pdf')
         info_title, info_author, head_text = _try_pypdf(path)
+        if not head_text or not head_text.strip():
+            head_text = _try_pdftotext(path)
+        text_hint = head_text if head_text and head_text.strip() else ''
         raw = b''
         if not head_text or not info_title or not info_author:
             try:
@@ -226,6 +270,10 @@ def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQue
         isbn = isbns[0] if isbns else ''
         title = '' if is_garbage_text(info_title or '') else (info_title or '').strip()[:300]
         authors = split_authors(info_author or '')
+        if not title and text_hint:
+            title, text_authors = _text_title_authors(text_hint)
+            if not authors:
+                authors = text_authors
         return BookQuery(
             title_hint=title, authors_hint=authors, isbn_hint=isbn,
             source_format='pdf')

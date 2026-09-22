@@ -18,6 +18,7 @@ _EDITION_TAGS = re.compile(
     r'\b(?:readli\.net|litres|litmir|flibusta|sampler|ознакомительный\s*фрагмент|fb2|epub|pdf|djvu)\b',
     re.IGNORECASE,
 )
+_FILE_ID_RE = re.compile(r'[._ -]\d{5,}$')
 
 
 def _strip_book_ext(basename: str) -> str:
@@ -96,6 +97,10 @@ def parse_book_filename(basename: str, source_format: str = '') -> BookQuery:
         except (ValueError, IndexError):
             year = None
         name = _YEAR_RE.sub(' ', stem)
+        # Repository/download IDs are common in otherwise useful PDF names
+        # (``...design.834478``).  They are not part of the title and make
+        # online catalogue matching unnecessarily brittle.
+        name = _FILE_ID_RE.sub('', name)
         name = re.sub(r'\[.*?\]', ' ', name) if '[' in name and ']' in name and not _BRACKET_AUTHOR_RE.match(name) else name
         name = re.sub(r'\s+', ' ', name.replace('_', ' ')).strip(' .-')
         if not name:

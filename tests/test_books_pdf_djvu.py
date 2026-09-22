@@ -2,6 +2,7 @@
 from namer.books.djvu import extract_via_djvused, parse_djvu_meta_bytes
 from namer.books.pdf import (
     extract_pdf_query, parse_pdf_info_bytes, split_authors,
+    _text_title_authors,
 )
 
 PDF_MIN = (b'%PDF-1.4\n1 0 obj<</Title (Real Book Title)/Author (Ivan Petrov)'
@@ -28,6 +29,14 @@ def test_split_authors():
     assert split_authors('Microsoft Word') == ()
     assert split_authors('') == ()
     assert split_authors(None) == ()
+
+
+def test_text_pdf_cover_author_before_title():
+    title, authors = _text_title_authors(
+        'CHRISTOPHER W. TOTTEN\nARCHITECTURAL APPROACH TO\n'
+        'LEVEL\nDESIGN\n2ND EDITION\n')
+    assert title == 'ARCHITECTURAL APPROACH TO LEVEL DESIGN'
+    assert authors == ('CHRISTOPHER W. TOTTEN',)
 
 
 def test_pdf_garbage_filtered(tmp_path):

@@ -73,3 +73,23 @@ def test_cli_author_override(tmp_path):
 def test_parser_has_author_flag():
     args = build_parser().parse_args(['-a', 'X'])
     assert args.author == 'X'
+
+
+def test_parser_has_book_enrichment_flag():
+    assert build_parser().parse_args(['--enrich-books']).enrich_books is True
+
+
+def test_core_dispatcher_uses_book_searchers(tmp_path):
+    from namer.books.models import BookOpinion, BookRecord
+
+    p = tmp_path / 'raw.pdf'
+    p.write_bytes(b'%PDF no embedded metadata')
+
+    def searcher(query):
+        return [BookOpinion(
+            'test', BookRecord(title='Canonical PDF', authors=('Author',),
+                               year=2020, confidence=0.95), 0.95)]
+
+    new, meta = generate_new_name(str(p), book_searchers=[searcher])
+    assert new == 'Author - Canonical PDF (2020).pdf'
+    assert meta['_skip'] is False
