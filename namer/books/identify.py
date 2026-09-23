@@ -118,7 +118,9 @@ def identify_book(path: str, known_title: str = '',
         warnings: list = []
         evidence: list = []
         try:
-            evidence.extend(str(item)[:240] for item in (q.diagnostics or ()) if item)
+            # ``-v`` is an explicit diagnostics request: preserve the full
+            # extractor/OCR response rather than hiding the decisive lines.
+            evidence.extend(str(item) for item in (q.diagnostics or ()) if item)
             if q.title_hint:
                 evidence.append(f'{"embedded" if q.source_format else "filename"}:title={q.title_hint[:80]}')
             if q.authors_hint:

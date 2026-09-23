@@ -55,6 +55,19 @@ def test_ocr_cover_author_before_multiline_title():
     assert authors == ('Марх Симан',)
 
 
+def test_cover_edition_layouts_choose_title_not_series_or_authors():
+    title, authors = _text_title_authors(
+        '4th Edition\nAndrew S. Tanenbaum,\nHerbert Bos\n'
+        'MODERNMODERN\nOPERATING SYSTEMSOPERATING SYSTEMS')
+    assert title == 'Modern Operating systems'
+    assert authors == ('Andrew S. Tanenbaum', 'Herbert Bos')
+    title, authors = _text_title_authors(
+        'КЛАССИКА COMPUTER SCIENCE\nАРХИТЕКТУРА\nКОМПЬЮТЕРА\n'
+        '6-Е ИЗДАНИЕ\nЭ. ТАНЕНБАУМ\nТ. ОСТИН')
+    assert title == 'Архитектура Компьютера'
+    assert authors == ('Э. ТАНЕНБАУМ', 'Т. ОСТИН')
+
+
 def test_pdf_garbage_filtered(tmp_path):
     p = tmp_path / 'g.pdf'
     p.write_bytes(b'%PDF-1.4\n1 0 obj<</Title (Untitled)/Author (Microsoft Word)>>\n%%EOF')
@@ -82,6 +95,7 @@ def test_pdf_ocr_text_is_used_when_local_text_is_empty(tmp_path, monkeypatch):
     q = extract_pdf_query(str(p))
     assert q.title_hint == 'The book title'
     assert q.authors_hint == ('Jane Author',)
+    assert any('THE BOOK TITLE' in item for item in q.diagnostics)
 
 
 def test_pdf_ocr_replaces_filename_metadata(tmp_path, monkeypatch):

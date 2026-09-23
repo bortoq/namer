@@ -21,6 +21,12 @@ _AUTHOR_RE = re.compile(rb'/Author\s*\(((?:\\.|[^()])*)\)', re.DOTALL)
 _AUTHOR_SPLIT_RE = re.compile(r'\s*(?:[,;]|\s+and\s+|\s+&\s+)\s*', re.IGNORECASE)
 _PERSON_LINE_RE = re.compile(
     r'^[A-ZА-ЯЁ][a-zа-яё]+(?:\s+[A-ZА-ЯЁ][a-zа-яё]+){1,3}$')
+_EDITION_RE = re.compile(r'\b(?:\d+(?:st|nd|rd|th)?\s+edition|\d+\s*[-‑–]?\s*е?\s*издани[ея])\b',
+                         re.IGNORECASE)
+_INITIAL_AUTHOR_RE = re.compile(
+    r'^(?:[A-ZА-ЯЁ]\.\s*){1,2}[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё-]+(?:,)?$')
+_AUTHOR_NAME_RE = re.compile(
+    r'^(?:[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё-]+|[A-ZА-ЯЁ]\.)(?:\s+(?:[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё-]+|[A-ZА-ЯЁ]\.)){1,3},?$')
 
 
 def _unescape_pdf_string(raw: bytes) -> str:
@@ -320,11 +326,77 @@ def _try_umi_ocr(path: str) -> str:
 def _text_title_authors(text: str) -> tuple:
     """Best-effort title/author from a text PDF's opening lines."""
     try:
-        lines = [re.sub(r'\s+', ' ', line).strip()
-                 for line in (text or '').splitlines()]
+        def clean_line(line: str) -> str:
+            line = re.sub(r'\s+', ' ', line).strip()
+            # A common OCR artifact on covers is a word printed twice without
+            # a separator (``MODERNMODERN``).  Collapse only exact halves.
+            if len(line) >= 6 and len(line) % 2 == 0:
+                half = line[:len(line) // 2]
+                if half == line[len(line) // 2:]:
+                    line = half
+            return line
+
+        def render_title(parts: list) -> str:
+            values = [part.capitalize() if part.isupper() else part
+                      for part in parts if part]
+            return re.sub(r'\s+', ' ', ' '.join(values)).strip()
+
+        def author_line(line: str) -> bool:
+            if _PERSON_LINE_RE.fullmatch(line) or _INITIAL_AUTHOR_RE.fullmatch(line):
+                return True
+            # An all-caps title resembles a name syntactically.  Accept it as
+            # an author only when it contains an initial (``A. TANENBAUM``).
+            return bool(_AUTHOR_NAME_RE.fullmatch(line)
+                        and (line != line.upper() or re.search(r'\b[A-ZА-ЯЁ]\.', line)))
+
+        lines = [clean_line(line) for line in (text or '').splitlines()]
         lines = [line for line in lines if 2 <= len(line) <= 240]
         if not lines or is_garbage_text(lines[0]):
             return '', ()
+        # Cover layout: a series label, a multi-line title, an edition and
+        # initial+surname author lines.  The title immediately before the
+        # edition is more trustworthy than a decorative label at the top.
+        for edition_idx, line in enumerate(lines[:12]):
+            if not _EDITION_RE.search(line) or edition_idx < 1:
+                continue
+            prefix = lines[:edition_idx]
+            # Author-before-title covers use the entire remaining block;
+            # without such an author, keep the two title lines nearest the
+            # edition and discard a decorative series label.
+            author_before_title = author_line(prefix[0])
+            title_parts = prefix[1:] if author_before_title else prefix[-2:]
+            title = (re.sub(r'\s+', ' ', ' '.join(title_parts)).strip()
+                     if author_before_title else render_title(title_parts))
+            author_parts = []
+            for author in lines[edition_idx + 1:edition_idx + 4]:
+                if author_line(author):
+                    author_parts.append(author.rstrip(','))
+                elif author_parts:
+                    break
+            if len(title) >= 2:
+                if author_before_title:
+                    return title, (prefix[0].rstrip(','),)
+                return title, tuple(author_parts)
+        # Some English covers put the edition first, then authors, then the
+        # title.  This is the layout used by Modern Operating Systems.
+        for edition_idx, line in enumerate(lines[:3]):
+            if not _EDITION_RE.search(line):
+                continue
+            author_parts = []
+            pos = edition_idx + 1
+            while pos < min(len(lines), edition_idx + 4) and author_line(lines[pos]):
+                author_parts.append(lines[pos].rstrip(','))
+                pos += 1
+            title_parts = []
+            while pos < min(len(lines), edition_idx + 6):
+                candidate = lines[pos]
+                if _EDITION_RE.search(candidate) or author_line(candidate):
+                    break
+                title_parts.append(candidate)
+                pos += 1
+            title = render_title(title_parts)
+            if len(title) >= 2:
+                return title, tuple(author_parts)
         # Covers often put an all-caps author with an initial before an
         # all-caps title (e.g. ``CHRISTOPHER W. TOTTEN``).  In that layout
         # the first line is the author, not the title.
@@ -354,10 +426,7 @@ def _text_title_authors(text: str) -> tuple:
             if len(title_lines) >= 2 and title_lines[0][:1].islower():
                 title_lines = title_lines[1:]
             if title_lines:
-                normalized = []
-                for part in title_lines:
-                    normalized.append(part.capitalize() if part.isupper() else part)
-                title = re.sub(r'\s+', ' ', ' '.join(normalized)).strip()
+                title = render_title(title_lines)
                 if len(title) >= 2:
                     return title, (line,)
         title = lines[0]
@@ -365,6 +434,15 @@ def _text_title_authors(text: str) -> tuple:
         return title, authors
     except Exception:
         return '', ()
+
+
+def _diagnostic_text(source: str, text: str) -> str:
+    """One verbose-safe evidence line containing the extractor's output."""
+    try:
+        visible = (text or '').replace('\r', '').replace('\n', ' ↩ ')
+        return f'{source} output: {visible}'
+    except Exception:
+        return f'{source} output unavailable'
 
 
 def _metadata_title_is_placeholder(title: str, path: str) -> bool:
@@ -398,20 +476,25 @@ def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQue
         info_title, info_author, head_text = _try_pypdf(path)
         if head_text and head_text.strip():
             diagnostics.append(f'text: pypdf ({len(head_text)} characters)')
+            diagnostics.append(_diagnostic_text('text: pypdf', head_text))
         if not head_text or not head_text.strip():
             head_text = _try_pdftotext(path)
             if head_text and head_text.strip():
                 diagnostics.append(f'text: pdftotext ({len(head_text)} characters)')
+                diagnostics.append(_diagnostic_text('text: pdftotext', head_text))
         if not head_text or not head_text.strip():
             head_text = _try_umi_ocr(path)
             if head_text and head_text.strip():
                 diagnostics.append(f'ocr: Umi-OCR success ({len(head_text)} characters)')
+                diagnostics.append(_diagnostic_text('ocr: Umi-OCR', head_text))
         if not head_text or not head_text.strip():
             ocr_result = _ocr_space_result(path)
             diagnostics.append(
                 f'ocr: {ocr_result.provider} {ocr_result.status}'
                 + (f' ({ocr_result.detail})' if ocr_result.detail else ''))
             head_text = ocr_result.text
+            if head_text:
+                diagnostics.append(_diagnostic_text(f'ocr: {ocr_result.provider}', head_text))
         text_hint = head_text if head_text and head_text.strip() else ''
         raw = b''
         if not head_text or not info_title or not info_author:
