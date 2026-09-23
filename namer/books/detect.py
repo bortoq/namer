@@ -54,6 +54,10 @@ def is_garbage_text(text: str) -> bool:
     t = text.strip().lower()
     if len(t) < 2:
         return True
+    # A legacy PDF metadata field occasionally arrives as ``<C0F0...>``.
+    # It is transport encoding, not a title; PDF parsing may decode it later.
+    if re.fullmatch(r'<[0-9a-f]{8,}>', t):
+        return True
     for g in _GARBAGE_TOKENS:
         if g in t:
             return True

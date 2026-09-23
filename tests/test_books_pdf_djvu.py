@@ -2,7 +2,7 @@
 from namer.books.djvu import extract_via_djvused, parse_djvu_meta_bytes
 from namer.books.pdf import (
     extract_pdf_query, parse_pdf_info_bytes, split_authors,
-    _text_title_authors,
+    _decode_hex_metadata, _text_title_authors, _title_author_from_legacy_metadata,
 )
 
 PDF_MIN = (b'%PDF-1.4\n1 0 obj<</Title (Real Book Title)/Author (Ivan Petrov)'
@@ -22,6 +22,14 @@ def test_pdf_escaped_parens():
     data = b'/Title (A \\(test\\) book)'
     t, _ = parse_pdf_info_bytes(data)
     assert t == 'A (test) book'
+
+
+def test_legacy_hex_pdf_metadata_is_decoded_before_naming():
+    encoded = '<C0F0E8F1F2EEF2E5EBFC20D1F2E0E3E8F0E8F2202D20CE20E2EEE7EDE8EAEDEEE2E5EDE8E820E6E8E2EEF2EDFBF5202831393430292E646A7675>'
+    decoded = _decode_hex_metadata(encoded)
+    assert decoded == 'Аристотель Стагирит - О возникновении животных (1940).djvu'
+    assert _title_author_from_legacy_metadata(decoded) == (
+        'О возникновении животных (1940)', 'Аристотель Стагирит')
 
 
 def test_split_authors():

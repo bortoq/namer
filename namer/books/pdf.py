@@ -27,6 +27,7 @@ _INITIAL_AUTHOR_RE = re.compile(
     r'^(?:[A-ZА-ЯЁ]\.\s*){1,2}[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё-]+(?:,)?$')
 _AUTHOR_NAME_RE = re.compile(
     r'^(?:[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё-]+|[A-ZА-ЯЁ]\.)(?:\s+(?:[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё-]+|[A-ZА-ЯЁ]\.)){1,3},?$')
+_HEX_METADATA_RE = re.compile(r'^<([0-9A-Fa-f]{8,})>$')
 
 
 def _unescape_pdf_string(raw: bytes) -> str:
@@ -158,6 +159,49 @@ def split_authors(raw: str) -> tuple:
         return tuple(p[:120] for p in parts if p and not is_garbage_text(p))
     except Exception:
         return ()
+
+
+def _decode_hex_metadata(value: str) -> str:
+    """Decode legacy ``<C0F0...>`` PDF metadata, usually Windows-1251.
+
+    Some PDF producers store raw legacy bytes as an ASCII hex string instead
+    of a PDF text string.  Keeping the hex would create a meaningless file
+    name; accept a decoding only when it contains real letters.
+    """
+    try:
+        match = _HEX_METADATA_RE.fullmatch((value or '').strip())
+        if not match or len(match.group(1)) % 2:
+            return value or ''
+        raw = bytes.fromhex(match.group(1))
+        candidates = []
+        for priority, encoding in enumerate(('utf-8', 'cp1251', 'koi8-r')):
+            try:
+                decoded = raw.decode(encoding).strip()
+            except UnicodeDecodeError:
+                continue
+            letters = sum(char.isalpha() for char in decoded)
+            if letters >= 2 and '\ufffd' not in decoded:
+                candidates.append((sum('А' <= char <= 'я' or char == 'Ё'
+                                       for char in decoded), -priority, decoded))
+        return max(candidates, default=(0, 0, value or ''))[2][:300]
+    except (TypeError, ValueError):
+        return value or ''
+
+
+def _title_author_from_legacy_metadata(title: str) -> tuple:
+    """Split decoded ``Author - Title.ext`` metadata when present."""
+    try:
+        value = (title or '').strip()
+        value = re.sub(r'\.(?:fb2|epub|djvu|pdf)$', '', value,
+                       flags=re.IGNORECASE)
+        if ' - ' not in value:
+            return value, ''
+        author, title = value.split(' - ', 1)
+        if len(author.strip()) >= 2 and len(title.strip()) >= 2:
+            return title.strip(), author.strip()
+        return value, ''
+    except Exception:
+        return title or '', ''
 
 
 def _try_pypdf(path: str) -> tuple:
@@ -489,6 +533,14 @@ def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQue
             return BookQuery(source_format='pdf')
         diagnostics = []
         info_title, info_author, head_text = _try_pypdf(path)
+        decoded_title = _decode_hex_metadata(info_title)
+        legacy_title = decoded_title != info_title
+        info_title = decoded_title
+        if legacy_title:
+            info_title, legacy_author = _title_author_from_legacy_metadata(info_title)
+            if legacy_author:
+                info_author = legacy_author
+            diagnostics.append('metadata: decoded legacy hexadecimal title')
         if head_text and head_text.strip():
             diagnostics.append(f'text: pypdf ({len(head_text)} characters)')
             diagnostics.append(_diagnostic_text('text: pypdf', head_text))
