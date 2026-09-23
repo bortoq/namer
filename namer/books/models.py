@@ -40,6 +40,9 @@ class BookQuery:
     year_hint: Optional[int] = None
     fingerprint: str = ''
     source_format: str = ''
+    # Non-canonical extraction/OCR state for ``namer -v``.  It must never
+    # participate in matching or rendering a book name.
+    diagnostics: tuple = ()
 
     def is_empty(self) -> bool:
         # AUDIT: explicit type guards — non-str hints count as missing.

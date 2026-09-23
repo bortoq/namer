@@ -15,6 +15,9 @@ import pytest
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+# Tests must not inherit a developer's personal repo configuration.  Set this
+# before importing ``namer.settings``, which resolves CONFIG_PATH at import.
+os.environ['NAMER_CONFIG'] = os.path.join(_ROOT, 'tests', 'default-config.ini')
 
 
 @pytest.fixture(autouse=True)

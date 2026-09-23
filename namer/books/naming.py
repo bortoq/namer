@@ -141,7 +141,8 @@ def provisional_record(identity: BookIdentity) -> Optional[BookRecord]:
 def generate_book_name(file_path: str, pattern: str = '',
                        known_title: str = '', known_author: str = '',
                        opinions: Optional[list] = None,
-                       allow_local: bool = True) -> tuple:
+                       allow_local: bool = True,
+                       identity: Optional[BookIdentity] = None) -> tuple:
     """Generate new basename for a book file.
 
     Network opinions (when given) override local hints via fusion.
@@ -152,7 +153,10 @@ def generate_book_name(file_path: str, pattern: str = '',
         if not isinstance(file_path, str) or not file_path:
             return '', BookIdentity(status='unresolved', warnings=['empty path'])
         basename = os.path.basename(file_path)
-        ident = identify_book(file_path, known_title, known_author)
+        # The caller may already have parsed the file to query catalogues.
+        # Reuse that exact identity: PDF OCR is expensive and must run once.
+        ident = identity if isinstance(identity, BookIdentity) else identify_book(
+            file_path, known_title, known_author)
         record: Optional[BookRecord] = None
         try:
             fused = fuse_opinions(opinions, ident.query) if opinions else None

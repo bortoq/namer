@@ -74,10 +74,11 @@ def fuse_opinions(opinions: list, query: BookQuery = None):
         ops = [o for o in (opinions or []) if o is not None and o.record is not None]
         if query is not None and not query.is_empty():
             ranked = rank_opinions(query, ops)
-            # Keep the historical strong-provider fallback when local files
-            # contain no usable title hint (for example a binary PDF).
-            if ranked:
-                ops = ranked
+            # A concrete local hint is a safety gate: a catalogue answer that
+            # cannot substantively match it must not rename the media file.
+            if not ranked:
+                return None
+            ops = ranked
         if not ops:
             return None
         # 1) ISBN agreement (strongest): any shared normalized ISBN-13

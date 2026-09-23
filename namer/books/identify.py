@@ -38,6 +38,7 @@ def merge_queries(primary: BookQuery, fallback: BookQuery) -> BookQuery:
                        if primary.year_hint is not None else fallback.year_hint),
             fingerprint=primary.fingerprint or fallback.fingerprint,
             source_format=primary.source_format or fallback.source_format,
+            diagnostics=primary.diagnostics or fallback.diagnostics,
         )
     except Exception:
         return primary if isinstance(primary, BookQuery) else BookQuery()
@@ -89,6 +90,7 @@ def build_query(path: str, known_title: str = '',
                 isbn_hint=q.isbn_hint, lang_hint=q.lang_hint,
                 year_hint=q.year_hint, fingerprint=q.fingerprint,
                 source_format=q.source_format or kind,
+                diagnostics=q.diagnostics,
             )
         if not q.source_format:
             q = BookQuery(
@@ -96,7 +98,7 @@ def build_query(path: str, known_title: str = '',
                 series_hint=q.series_hint, series_index_hint=q.series_index_hint,
                 isbn_hint=q.isbn_hint, lang_hint=q.lang_hint,
                 year_hint=q.year_hint, fingerprint=q.fingerprint,
-                source_format=kind)
+                source_format=kind, diagnostics=q.diagnostics)
         return q
     except Exception:
         return BookQuery()
@@ -116,6 +118,7 @@ def identify_book(path: str, known_title: str = '',
         warnings: list = []
         evidence: list = []
         try:
+            evidence.extend(str(item)[:240] for item in (q.diagnostics or ()) if item)
             if q.title_hint:
                 evidence.append(f'{"embedded" if q.source_format else "filename"}:title={q.title_hint[:80]}')
             if q.authors_hint:

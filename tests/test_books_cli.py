@@ -93,8 +93,10 @@ def test_core_dispatcher_uses_book_searchers(tmp_path):
                                year=2020, confidence=0.95), 0.95)]
 
     new, meta = generate_new_name(str(p), book_searchers=[searcher])
-    assert new == 'Author - Canonical PDF (2020).pdf'
-    assert meta['_skip'] is False
+    # A weak filename hint must not be overwritten by an unrelated catalogue
+    # response.  The same gate protects scanned PDFs from wrong renames.
+    assert new == 'raw.pdf'
+    assert meta['_skip'] is False  # the local filename remains usable
 
 
 def test_core_skips_remote_lookup_when_embedded_book_identity_is_complete(tmp_path):

@@ -9,12 +9,12 @@ import subprocess
 import shutil
 import tempfile
 import urllib.request
-import uuid
 from io import BytesIO
 from typing import Optional
 
 from namer.books.detect import find_isbns_in_text, is_garbage_text
 from namer.books.models import BookQuery, ReadBudget
+from namer.books.ocr import OCRResult, ocr_space_text
 
 _TITLE_RE = re.compile(rb'/Title\s*\(((?:\\.|[^()])*)\)', re.DOTALL)
 _AUTHOR_RE = re.compile(rb'/Author\s*\(((?:\\.|[^()])*)\)', re.DOTALL)
@@ -235,62 +235,14 @@ def _first_pages_pdf(path: str, pages: int = 3) -> bytes:
         return b''
 
 
-def _multipart(fields: dict, name: str, content: bytes,
-               filename: str, content_type: str) -> tuple:
-    boundary = '----namer-' + uuid.uuid4().hex
-    chunks = []
-    for key, value in fields.items():
-        chunks.extend([
-            f'--{boundary}\r\n'.encode(),
-            f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(),
-            str(value).encode(), b'\r\n',
-        ])
-    chunks.extend([
-        f'--{boundary}\r\n'.encode(),
-        (f'Content-Disposition: form-data; name="{name}"; '
-         f'filename="{filename}"\r\n').encode(),
-        f'Content-Type: {content_type}\r\n\r\n'.encode(),
-        content, b'\r\n', f'--{boundary}--\r\n'.encode(),
-    ])
-    return b''.join(chunks), boundary
+def _ocr_space_result(path: str) -> OCRResult:
+    """Upload prepared pages through the isolated OCR client."""
+    return ocr_space_text(_first_pages_pdf(path, 3))
 
 
 def _try_ocr_space(path: str) -> str:
-    """OCR first three PDF pages through OCR.space Engine 3.
-
-    Uses OCR.space's documented public demo key with Engine 2 by default.
-    A personal key can be supplied through OCR_SPACE_API_KEY to enable the
-    more expensive Engine 3 without the shared demo-key limit.
-    """
-    try:
-        if os.environ.get('NAMER_DISABLE_OCR') == '1':
-            return ''
-        configured_key = os.environ.get('OCR_SPACE_API_KEY', '').strip()
-        api_key = configured_key or 'helloworld'
-        engine = '3' if configured_key else '2'
-        content = _first_pages_pdf(path, 3)
-        if not content:
-            return ''
-        body, boundary = _multipart(
-            {'language': 'auto', 'OCREngine': engine,
-             'filetype': 'PDF', 'isOverlayRequired': 'false',
-             'scale': 'true'},
-            'file', content, 'first-pages.pdf', 'application/pdf')
-        req = urllib.request.Request(
-            'https://api.ocr.space/parse/image', data=body,
-            headers={'Content-Type': f'multipart/form-data; boundary={boundary}',
-                     'apikey': api_key,
-                     'User-Agent': 'namer/0.1'}, method='POST')
-        with urllib.request.urlopen(req, timeout=90) as response:
-            payload = response.read(2 * 1024 * 1024)
-        data = json.loads(payload.decode('utf-8', 'replace'))
-        text = []
-        for result in data.get('ParsedResults') or []:
-            if isinstance(result, dict) and result.get('ParsedText'):
-                text.append(str(result['ParsedText']))
-        return '\n'.join(text)[:30000]
-    except Exception:
-        return ''
+    """Compatibility adapter for callers that only need OCR text."""
+    return _ocr_space_result(path).text
 
 
 def _first_page_images(path: str, pages: int = 3) -> list:
@@ -442,13 +394,24 @@ def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQue
                 return BookQuery(source_format='pdf')
         except OSError:
             return BookQuery(source_format='pdf')
+        diagnostics = []
         info_title, info_author, head_text = _try_pypdf(path)
+        if head_text and head_text.strip():
+            diagnostics.append(f'text: pypdf ({len(head_text)} characters)')
         if not head_text or not head_text.strip():
             head_text = _try_pdftotext(path)
+            if head_text and head_text.strip():
+                diagnostics.append(f'text: pdftotext ({len(head_text)} characters)')
         if not head_text or not head_text.strip():
             head_text = _try_umi_ocr(path)
+            if head_text and head_text.strip():
+                diagnostics.append(f'ocr: Umi-OCR success ({len(head_text)} characters)')
         if not head_text or not head_text.strip():
-            head_text = _try_ocr_space(path)
+            ocr_result = _ocr_space_result(path)
+            diagnostics.append(
+                f'ocr: {ocr_result.provider} {ocr_result.status}'
+                + (f' ({ocr_result.detail})' if ocr_result.detail else ''))
+            head_text = ocr_result.text
         text_hint = head_text if head_text and head_text.strip() else ''
         raw = b''
         if not head_text or not info_title or not info_author:
@@ -494,6 +457,6 @@ def extract_pdf_query(path: str, budget: Optional[ReadBudget] = None) -> BookQue
                 authors = text_authors
         return BookQuery(
             title_hint=title, authors_hint=authors, isbn_hint=isbn,
-            source_format='pdf')
+            source_format='pdf', diagnostics=tuple(diagnostics))
     except Exception:
         return BookQuery(source_format='pdf')

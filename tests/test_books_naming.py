@@ -73,7 +73,7 @@ def test_generate_offline_fb2(tmp_path):
 
 
 def test_generate_network_overrides_local(tmp_path):
-    p = tmp_path / 'Автор - Локальное.fb2'
+    p = tmp_path / 'К А - Канон.fb2'
     p.write_bytes(b'junk')
     ops = [BookOpinion('openlibrary', _rec(title='Канон', authors=('К А',), provider='openlibrary'), 0.9)]
     new, ident = generate_book_name(str(p), opinions=ops)

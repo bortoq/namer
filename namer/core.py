@@ -154,11 +154,12 @@ def generate_new_name(
         is_book_path = lambda p: False  # noqa: E731
     if is_book_path(file_path):
         from namer.books.naming import generate_book_name as _generate_book_name
+        from namer.books.identify import identify_book
+        identity = identify_book(file_path, known_title, known_author)
         opinions = None
         if book_searchers:
             try:
-                from namer.books.identify import build_query
-                query = build_query(file_path, known_title, known_author)
+                query = identity.query
                 collected = []
                 if not query.is_empty() and _book_lookup_needed(query):
                     for search in book_searchers:
@@ -174,7 +175,7 @@ def generate_new_name(
         new_base, ident = _generate_book_name(
             file_path, pattern=pattern,
             known_title=known_title, known_author=known_author,
-            opinions=opinions)
+            opinions=opinions, identity=identity)
         if progress is not None:
             progress.set_action('rendering')
         meta = {

@@ -77,8 +77,8 @@ def test_pdf_ocr_text_is_used_when_local_text_is_empty(tmp_path, monkeypatch):
     p.write_bytes(b'%PDF-1.4 scan')
     monkeypatch.setattr(pdf, '_try_pypdf', lambda path: ('', '', ''))
     monkeypatch.setattr(pdf, '_try_pdftotext', lambda path: '')
-    monkeypatch.setattr(pdf, '_try_ocr_space',
-                        lambda path: 'THE BOOK TITLE\nJane Author\n')
+    monkeypatch.setattr(pdf, '_ocr_space_result',
+                        lambda path: pdf.OCRResult('THE BOOK TITLE\nJane Author\n', status='success'))
     q = extract_pdf_query(str(p))
     assert q.title_hint == 'The book title'
     assert q.authors_hint == ('Jane Author',)
@@ -92,8 +92,8 @@ def test_pdf_ocr_replaces_filename_metadata(tmp_path, monkeypatch):
     monkeypatch.setattr(pdf, '_try_pypdf',
                         lambda path: ('Tilul70 [Converted]', '', ''))
     monkeypatch.setattr(pdf, '_try_pdftotext', lambda path: '')
-    monkeypatch.setattr(pdf, '_try_ocr_space',
-                        lambda path: 'Внутреннее устройство Линукс\nБрайан Уорд')
+    monkeypatch.setattr(pdf, '_ocr_space_result', lambda path: pdf.OCRResult(
+        'Внутреннее устройство Линукс\nБрайан Уорд', status='success'))
     q = extract_pdf_query(str(p))
     assert q.title_hint == 'Внутреннее устройство Линукс'
     assert q.authors_hint == ('Брайан Уорд',)
@@ -107,8 +107,8 @@ def test_pdf_ocr_replaces_placeholder_author(tmp_path, monkeypatch):
     monkeypatch.setattr(pdf, '_try_pypdf',
                         lambda path: ('titul.indd', 'mostipan', ''))
     monkeypatch.setattr(pdf, '_try_pdftotext', lambda path: '')
-    monkeypatch.setattr(pdf, '_try_ocr_space',
-                        lambda path: 'Марх Симан\nКод, который\nумещается\nв голове')
+    monkeypatch.setattr(pdf, '_ocr_space_result', lambda path: pdf.OCRResult(
+        'Марх Симан\nКод, который\nумещается\nв голове', status='success'))
     q = extract_pdf_query(str(p))
     assert q.title_hint == 'Код, который умещается в голове'
     assert q.authors_hint == ('Марх Симан',)
@@ -142,6 +142,7 @@ def test_umi_ocr_local_http_adapter(monkeypatch):
 
 def test_ocr_space_uses_public_demo_key_without_configuration(monkeypatch):
     import namer.books.pdf as pdf
+    import namer.books.ocr as ocr
 
     monkeypatch.delenv('NAMER_DISABLE_OCR', raising=False)
     monkeypatch.delenv('OCR_SPACE_API_KEY', raising=False)
@@ -159,10 +160,35 @@ def test_ocr_space_uses_public_demo_key_without_configuration(monkeypatch):
         seen['engine2'] = b'name="OCREngine"\r\n\r\n2' in request.data
         return Response()
 
-    monkeypatch.setattr(pdf.urllib.request, 'urlopen', fake_urlopen)
+    monkeypatch.setattr(ocr.urllib.request, 'urlopen', fake_urlopen)
     assert pdf._try_ocr_space('scan.pdf') == 'Title'
     assert seen['key'] == 'helloworld'
     assert seen['engine2'] is True
+
+
+def test_ocr_space_caches_successful_result(monkeypatch):
+    import namer.books.ocr as ocr
+
+    monkeypatch.delenv('NAMER_DISABLE_OCR', raising=False)
+    monkeypatch.setattr(ocr, '_BACKOFF_UNTIL', 0)
+    calls = []
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, _limit): return b'{"ParsedResults":[{"ParsedText":"Cached title"}]}'
+
+    def fake_urlopen(*args, **kwargs):
+        calls.append(args)
+        return Response()
+
+    monkeypatch.setattr(ocr.urllib.request, 'urlopen', fake_urlopen)
+    first = ocr.ocr_space_text(b'%PDF cached-pages')
+    second = ocr.ocr_space_text(b'%PDF cached-pages')
+    assert first.status == 'success'
+    assert second.status == 'cached'
+    assert second.text == 'Cached title'
+    assert len(calls) == 1
 
 
 def test_pdf_edges():
