@@ -508,7 +508,11 @@ def rename_file(
     safe_name = _sanitize_filename(new_name)
     dest = os.path.join(directory, safe_name)
 
-    if file_path == dest:
+    # Capitalization alone is not useful metadata and on case-insensitive
+    # filesystems it is not even a distinct destination.  Avoid needless
+    # renames (and preserve the user's preferred casing) in both cases.
+    if (file_path == dest or os.path.basename(file_path).casefold()
+            == safe_name.casefold()):
         return True
 
     # Step 2: resolve conflicts (checks both filesystem and reserved set)

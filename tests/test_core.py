@@ -617,6 +617,14 @@ class TestRenameNoClobber:
     """B9-004: rename_file must never overwrite an existing destination,
     even when the destination appears between the conflict check and rename."""
 
+    def test_rename_skips_case_only_change(self, tmp_path):
+        from namer.core import rename_file
+        src = tmp_path / 'сатана, кантор и бесконечность.pdf'
+        src.write_bytes(b'SOURCE')
+        assert rename_file(str(src), 'САТАНА, КАНТОР И БЕСКОНЕЧНОСТЬ.pdf') is True
+        assert src.exists()
+        assert not (tmp_path / 'САТАНА, КАНТОР И БЕСКОНЕЧНОСТЬ.pdf').exists()
+
     def test_rename_no_clobber_plain(self, tmp_path):
         from namer.core import rename_file
         src = tmp_path / 'Movie.mkv'

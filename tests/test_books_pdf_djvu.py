@@ -68,6 +68,15 @@ def test_cover_edition_layouts_choose_title_not_series_or_authors():
     assert authors == ('Э. ТАНЕНБАУМ', 'Т. ОСТИН')
 
 
+def test_ocr_discards_single_glyph_and_uses_cover_title_after_author():
+    title, authors = _text_title_authors(
+        '票！\nРАЙМОНД СМАМИАН\nВОВЕКИ\nНЕРАЗРЕШИМОЕ\n'
+        'ПУТЬ К ГЕДЕЛЮ\nЧЕРЕЗ ЗАНИМАТЕЛЬНЫЕ\nЗАГАДКИ')
+    assert title == ('Вовеки Неразрешимое Путь к геделю Через занимательные '
+                     'Загадки')
+    assert authors == ('РАЙМОНД СМАМИАН',)
+
+
 def test_pdf_garbage_filtered(tmp_path):
     p = tmp_path / 'g.pdf'
     p.write_bytes(b'%PDF-1.4\n1 0 obj<</Title (Untitled)/Author (Microsoft Word)>>\n%%EOF')

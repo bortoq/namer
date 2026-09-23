@@ -339,7 +339,7 @@ def _text_title_authors(text: str) -> tuple:
         def render_title(parts: list) -> str:
             values = [part.capitalize() if part.isupper() else part
                       for part in parts if part]
-            return re.sub(r'\s+', ' ', ' '.join(values)).strip()
+            return re.sub(r'\s+', ' ', ' '.join(values)).strip(' ,;')
 
         def author_line(line: str) -> bool:
             if _PERSON_LINE_RE.fullmatch(line) or _INITIAL_AUTHOR_RE.fullmatch(line):
@@ -350,9 +350,24 @@ def _text_title_authors(text: str) -> tuple:
                         and (line != line.upper() or re.search(r'\b[A-ZА-ЯЁ]\.', line)))
 
         lines = [clean_line(line) for line in (text or '').splitlines()]
-        lines = [line for line in lines if 2 <= len(line) <= 240]
-        if not lines or is_garbage_text(lines[0]):
+        # Ignore OCR debris such as ``票！``.  A book title must contain at
+        # least two letters; punctuation must never turn a single glyph into
+        # an apparent title.
+        lines = [line for line in lines if 2 <= len(line) <= 240
+                 and not is_garbage_text(line)
+                 and sum(char.isalpha() for char in line) >= 2]
+        if not lines:
             return '', ()
+        # A scanned cover can have an all-caps two-word author line first.
+        # If it is followed by a long all-caps title block, use that block
+        # rather than naming the file after the author (or OCR debris before
+        # it).  This covers Raymond Smullyan's Russian editions.
+        first_words = lines[0].replace(',', '').split()
+        if (len(lines) >= 4 and len(first_words) == 2 and lines[0].isupper()
+                and all(part.isupper() for part in lines[1:4])):
+            title = render_title(lines[1:6])
+            if len(title) >= 2:
+                return title, (lines[0].rstrip(','),)
         # Cover layout: a series label, a multi-line title, an edition and
         # initial+surname author lines.  The title immediately before the
         # edition is more trustworthy than a decorative label at the top.
@@ -365,7 +380,7 @@ def _text_title_authors(text: str) -> tuple:
             # edition and discard a decorative series label.
             author_before_title = author_line(prefix[0])
             title_parts = prefix[1:] if author_before_title else prefix[-2:]
-            title = (re.sub(r'\s+', ' ', ' '.join(title_parts)).strip()
+            title = (re.sub(r'\s+', ' ', ' '.join(title_parts)).strip(' ,;')
                      if author_before_title else render_title(title_parts))
             author_parts = []
             for author in lines[edition_idx + 1:edition_idx + 4]:
@@ -405,14 +420,14 @@ def _text_title_authors(text: str) -> tuple:
             title = ' '.join(lines[1:4])
             title = re.sub(r'\b\d+(?:ST|ND|RD|TH)\s+EDITION\b', '',
                            title, flags=re.IGNORECASE)
-            title = re.sub(r'\s+', ' ', title).strip()
+            title = re.sub(r'\s+', ' ', title).strip(' ,;')
             if title:
                 return title, split_authors(lines[0])
         if len(lines) >= 3 and _PERSON_LINE_RE.fullmatch(lines[0]):
             title = ' '.join(lines[1:4])
             title = re.sub(r'\b\d+(?:ST|ND|RD|TH)\s+EDITION\b', '',
                            title, flags=re.IGNORECASE)
-            title = re.sub(r'\s+', ' ', title).strip()
+            title = re.sub(r'\s+', ' ', title).strip(' ,;')
             if title:
                 return title, (lines[0],)
         # OCR covers often put a subtitle/tagline first, then a title on
@@ -429,7 +444,7 @@ def _text_title_authors(text: str) -> tuple:
                 title = render_title(title_lines)
                 if len(title) >= 2:
                     return title, (line,)
-        title = lines[0]
+        title = lines[0].strip(' ,;')
         authors = split_authors(lines[1]) if len(lines) > 1 else ()
         return title, authors
     except Exception:
