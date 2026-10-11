@@ -237,8 +237,8 @@ def wikipedia_feed(meta: Dict, language: str) -> ProviderOpinion:
     """Feed from Wikipedia: canonical page title, premiere year, ep titles.
 
     The title in *meta* is only a search hint: the page found by searching
-    it is voted only when it plausibly matches the hint (_validated_match:
-    word overlap + year agreement).  When nothing matches, the feed abstains
+    it is voted only when the resolver confirms the media type, release year
+    and matching title or documented alias. When nothing matches, the feed abstains
     — the hint must never win the vote by being echoed back as 'canonical'.
     Episode-title votes only happen when the S/E hint is explicit; with an
     assumed season the lookup target is unreliable, so we abstain instead of
@@ -246,27 +246,36 @@ def wikipedia_feed(meta: Dict, language: str) -> ProviderOpinion:
     """
     op = ProviderOpinion('wikipedia')
     try:
-        from namer.wikipedia import (search_canonical_title,
-                                     fetch_episode_titles, fetch_show_year)
+        from namer.wikipedia import resolve_wiki_title, fetch_episode_titles, _request_errors
         hint = meta.get('title', '')
         if not hint:
             op.abstain = True
             return op
-        canonical = search_canonical_title(hint, language)
-        if not canonical:
+        resolved = meta.get('_wiki_resolution')
+        if (not resolved and meta.get('_wiki_lookup_context') == [
+                hint, language, meta.get('is_series'), meta.get('year') or None]):
             op.abstain = True
+            if meta.get('_wiki_error'):
+                op.meta['error'] = meta['_wiki_error']
             return op
-        hint_year = meta.get('year') or None
-        # The page year is cached by fetch_show_year; it is needed to
-        # validate translated-synonym matches ('Yuru Camp' → 'Laid-Back
-        # Camp'), so it is always fetched once a page was found.
-        year = fetch_show_year(canonical, language)
-        if not _validated_match(hint, canonical, hint_year, year):
+        if not (resolved and resolved.get('title') == hint
+                and resolved.get('language') == language
+                and resolved.get('is_series') == meta.get('is_series')
+                and resolved.get('hint_year') == (meta.get('year') or None)):
+            resolved = resolve_wiki_title(hint, language, meta.get('is_series'),
+                                         meta.get('year') or None)
+        if not resolved:
             op.abstain = True
+            if _request_errors():
+                op.meta['error'] = '; '.join(dict.fromkeys(_request_errors()))
             return op
+        canonical = resolved['title']
+        year = resolved.get('year')
         op.set('title', canonical, 0.9)
         if year:
-            op.set('year', year, 0.85)
+            # Preserve an existing, validated release year (festival and
+            # theatrical releases can fall in adjacent years).
+            op.set('year', meta.get('year') or year, 0.85)
         if meta.get('is_series') and meta.get('episode') and not meta.get('season_assumed'):
             season = 0 if meta.get('is_special') else meta.get('season', 0)
             eps = fetch_episode_titles(canonical, language)

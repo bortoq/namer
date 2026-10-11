@@ -17,8 +17,13 @@ import json
 import os
 import re
 import threading
+import time
+from difflib import SequenceMatcher
+from email.utils import parsedate_to_datetime
 import urllib.parse
 import urllib.request
+import urllib.error
+from concurrent.futures import Future
 from typing import Dict, List, Optional, Tuple
 
 # ── Language helpers ───────────────────────────────────────────────────────────
@@ -66,6 +71,90 @@ def _save_cache(cache: Dict) -> None:
 # ── API helpers ───────────────────────────────────────────────────────────────
 
 _USER_AGENT = 'namer/1.0 (https://github.com/bortoq/namer)'
+_HTTP_LOCK = threading.Lock()
+_HTTP_CACHE = {}
+_HTTP_INFLIGHT = {}
+_HTTP_NEXT = {}
+_HTTP_STATE = threading.local()
+_HTTP_INTERVAL = 1.0
+
+
+def _request_errors() -> List[str]:
+    return getattr(_HTTP_STATE, 'errors', [])
+
+
+def _resolution_reason() -> str:
+    return getattr(_HTTP_STATE, 'resolution_reason', '')
+
+
+def _request_json(url: str) -> Optional[Dict]:
+    """Share successful requests and pace each host across all workers."""
+    with _HTTP_LOCK:
+        if url in _HTTP_CACHE:
+            return _HTTP_CACHE[url]
+        future = _HTTP_INFLIGHT.get(url)
+        owner = future is None
+        if owner:
+            future = _HTTP_INFLIGHT[url] = Future()
+    if not owner:
+        data, error = future.result()
+        if error:
+            _HTTP_STATE.errors = _request_errors() + [error]
+        return data
+
+    host = urllib.parse.urlparse(url).hostname
+    data, error = None, None
+    try:
+        for attempt in range(3):
+            while True:
+                with _HTTP_LOCK:
+                    delay = _HTTP_NEXT.get(host, 0) - time.monotonic()
+                    if delay <= 0:
+                        _HTTP_NEXT[host] = time.monotonic() + _HTTP_INTERVAL
+                        break
+                time.sleep(min(delay, 0.5))
+            try:
+                request = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    data = json.loads(response.read())
+                if not isinstance(data, dict):
+                    raise ValueError('unexpected API response')
+                if data.get('error'):
+                    error = f'{host}: {data["error"].get("code", "API error")}'
+                    data = None
+                break
+            except urllib.error.HTTPError as exc:
+                error = f'{host}: HTTP {exc.code}'
+                if exc.code not in (429, 502, 503, 504):
+                    break
+                retry = exc.headers.get('Retry-After', '') if exc.headers else ''
+                try:
+                    pause = max(0, float(retry))
+                except ValueError:
+                    try:
+                        pause = max(0, parsedate_to_datetime(retry).timestamp() - time.time())
+                    except (ValueError, TypeError):
+                        pause = 5 * (attempt + 1)
+                with _HTTP_LOCK:
+                    _HTTP_NEXT[host] = max(_HTTP_NEXT.get(host, 0),
+                                           time.monotonic() + pause)
+            except (OSError, ValueError) as exc:
+                error = f'{host}: {exc}'
+                break
+        if data is not None:
+            error = None
+            with _HTTP_LOCK:
+                _HTTP_CACHE[url] = data
+        elif error:
+            _HTTP_STATE.errors = _request_errors() + [error]
+        future.set_result((data, error))
+        return data
+    except BaseException as exc:
+        future.set_exception(exc)
+        raise
+    finally:
+        with _HTTP_LOCK:
+            _HTTP_INFLIGHT.pop(url, None)
 
 
 def _wiki_api(language: str, params: Dict) -> Optional[Dict]:
@@ -73,12 +162,7 @@ def _wiki_api(language: str, params: Dict) -> Optional[Dict]:
     params['format'] = 'json'
     params['action'] = 'query'
     url = f'https://{language}.wikipedia.org/w/api.php?' + urllib.parse.urlencode(params)
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
-    except Exception:
-        return None
+    return _request_json(url)
 
 
 def _search_pages(title: str, language: str) -> List[str]:
@@ -86,7 +170,7 @@ def _search_pages(title: str, language: str) -> List[str]:
     data = _wiki_api(language, {
         'list': 'search',
         'srsearch': title,
-        'srlimit': 3,
+        'srlimit': 10,
     })
     if not data:
         return []
@@ -106,7 +190,8 @@ def _strip_disambiguation(page: str) -> str:
     """Strip Wikipedia disambiguation suffixes: 'X (film)' -> 'X'."""
     clean = re.sub(
         r'\s*\(\s*(?:film|movie|pel[íi]cula|tv series|serie|'
-        r'film\s*,\s*\d{4}|tv series\s*,\s*\d{4})[^)]*\)\s*$',
+        r'film\s*,\s*\d{4}|tv series\s*,\s*\d{4}|'
+        r'\d{4}\s+(?:[^()]*\s)?(?:film|TV series)|фильм|телесериал|сериал|аниме)[^)]*\)\s*$',
         '', page, flags=re.IGNORECASE,
     ).strip()
     return clean or page
@@ -163,17 +248,26 @@ def _get_wikidata_id(page_title: str, language: str) -> Optional[str]:
     Returns:
         QID string (e.g. 'Q28114432') or None.
     """
-    data = _wiki_api(language, {
+    params = {
         'titles': page_title,
         'prop': 'pageprops',
         'ppprop': 'wikibase_item',
-    })
+    }
+    data = _wiki_api(language, params)
     if not data:
         return None
     pages = data.get('query', {}).get('pages', {})
     for pid, pdata in pages.items():
         if pid != '-1':
-            return pdata.get('pageprops', {}).get('wikibase_item')
+            qid = pdata.get('pageprops', {}).get('wikibase_item')
+            if qid:
+                return qid
+    if any('redirect' in page for page in pages.values()):
+        data = _wiki_api(language, {**params, 'redirects': 1}) or {}
+        for page in data.get('query', {}).get('pages', {}).values():
+            qid = page.get('pageprops', {}).get('wikibase_item')
+            if qid:
+                return qid
     return None
 
 
@@ -189,9 +283,9 @@ def _get_wikidata_label(qid: str, target_lang: str) -> Optional[str]:
     """
     try:
         url = f'{_WIKIDATA_API}?action=wbgetentities&ids={qid}&props=labels&languages={target_lang}&format=json'
-        req = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
+        data = _request_json(url)
+        if not data:
+            return None
         entity = data.get('entities', {}).get(qid, {})
         label = entity.get('labels', {}).get(target_lang, {})
         return label.get('value')
@@ -256,9 +350,9 @@ def _get_wikidata_entity(qid: str) -> Optional[Dict]:
         return cache[qid]
     try:
         url = f'{_WIKIDATA_API}?action=wbgetentities&ids={qid}&props=claims&format=json'
-        req = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
+        data = _request_json(url)
+        if not data:
+            return None
     except Exception:
         return None
     entity = data.get('entities', {}).get(qid, {})
@@ -298,6 +392,64 @@ def _get_wikidata_types(qid: str) -> frozenset:
 def _get_wikidata_year(qid: str) -> Optional[int]:
     rec = _get_wikidata_entity(qid)
     return rec.get('year') if rec else None
+
+
+def _get_wikidata_parents(qid: str) -> List[str]:
+    data = _request_json(f'{_WIKIDATA_API}?action=wbgetentities&ids={qid}&props=claims&format=json')
+    claims = (data or {}).get('entities', {}).get(qid, {}).get('claims', {})
+    return [item['mainsnak']['datavalue']['value']['id']
+            for item in claims.get('P279', [])
+            if isinstance(item.get('mainsnak', {}).get('datavalue', {}).get('value'), dict)
+            and item['mainsnak']['datavalue']['value'].get('id')]
+
+
+def _media_kind_matches(types, wanted) -> bool:
+    # Film subtypes (animation, television films) may be the sole P31.
+    pending, seen = set(types), set()
+    for _ in range(4):
+        if pending & wanted:
+            return True
+        parents = set()
+        for item in pending - seen - {'Q5', 'Q4167410'}:
+            parents.update(_get_wikidata_parents(item))
+        seen.update(pending)
+        pending = parents - seen
+        if not pending:
+            break
+    return False
+
+
+def _get_wikidata_aliases(qid: str, language: str) -> List[str]:
+    url = (f'{_WIKIDATA_API}?action=wbgetentities&ids={qid}'
+           f'&props=labels%7Caliases&languages={language}&format=json')
+    data = _request_json(url) or {}
+    entity = data.get('entities', {}).get(qid, {})
+    return ([entity.get('labels', {}).get(language, {}).get('value', '')]
+            + [item['value'] for item in entity.get('aliases', {}).get(language, [])])
+
+
+def _get_wikidata_release_years(qid: str) -> List[int]:
+    data = _request_json(f'{_WIKIDATA_API}?action=wbgetentities&ids={qid}&props=claims&format=json')
+    claims = (data or {}).get('entities', {}).get(qid, {}).get('claims', {})
+    years = set()
+    for prop in ('P577', 'P580'):
+        for claim in claims.get(prop, []):
+            date = claim.get('mainsnak', {}).get('datavalue', {}).get('value', {}).get('time', '')
+            match = re.match(r'[+-](\d{4})', date)
+            if match:
+                years.add(int(match.group(1)))
+    return sorted(years)
+
+
+def _plausible_media_title(hint: str, title: str, year: Optional[int]) -> bool:
+    from namer.providers import _significant_words, _validated_match
+    if _normalize_title(hint) == _normalize_title(title) or _validated_match(hint, title):
+        return True
+    if not year:
+        return False
+    hw, tw = _significant_words(hint), _significant_words(title)
+    return bool(hw and tw and (hw <= tw or tw <= hw)) or SequenceMatcher(
+        None, hint.casefold(), title.casefold()).ratio() >= 0.85
 
 
 # ── Public API ────────────────────────────────────────────────────────────────────────
@@ -396,7 +548,7 @@ def get_translated_title(foreign_title: str, target_lang: str = 'en',
 
 def _normalize_title(title: str) -> str:
     """Lowercase alphanumeric-only form used for exact-title comparison."""
-    return re.sub(r'[^a-z0-9]+', '', (title or '').lower())
+    return re.sub(r'[\W_]+', '', (title or '').casefold())
 
 
 def _translated_for_candidate(page_title: str, from_lang: str, to_lang: str,
@@ -441,8 +593,137 @@ def _translated_for_candidate(page_title: str, from_lang: str, to_lang: str,
     return translated or None
 
 
+_RESOLUTION_LOCK = threading.Lock()
+
+
+def resolve_wiki_title(hint: str, language: str = 'en',
+                       is_series: Optional[bool] = None,
+                       year: Optional[int] = None) -> Optional[Dict]:
+    """Resolve a title to a media entity, preserving its page and year.
+
+    Successful confirmation is independent of whether the display title
+    changes. Movie years never come from similarly named television pages.
+    Only positive, context-specific results are cached; failed requests can
+    be retried, and the old unqualified year cache is not consulted.
+    """
+    if not hint:
+        return None
+    _HTTP_STATE.errors = []
+    _HTTP_STATE.resolution_reason = ''
+    from namer.providers import _validated_match
+
+    source = _detect_language(hint) or 'en'
+    cache_path = _wiki_cache_path('wikipedia_resolved.json')
+    key = json.dumps([2, hint.casefold().strip(), source, language, is_series, year])
+
+    def load():
+        try:
+            with open(cache_path) as file:
+                loaded = json.load(file)
+                return loaded if isinstance(loaded, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    with _RESOLUTION_LOCK:
+        cached = load().get(key)
+    if cached and time.time() - cached.get('cached_at', 0) < 7 * 86400:
+        return cached
+
+    kind = 'TV series' if is_series else 'film'
+    queries = ([f'{hint} {year} {kind}'] if year else []) + [f'{hint} {kind}', hint]
+    seen = set()
+    for query in dict.fromkeys(queries):
+        candidates = []
+        pages = _search_pages(query, source)
+        if year:
+            pages = [page for page in pages if not (
+                (page_date := re.search(r'\((\d{4})\s+[^)]*(?:film|TV series)',
+                                        page, re.IGNORECASE))
+                and abs(int(page_date.group(1)) - year) > 1)]
+        # Exact title matches precede fuzzy aliases, reducing requests for
+        # unrelated search hits that share a common word like "Night".
+        exact_pages = [page for page in pages if _normalize_title(
+            _strip_disambiguation(page)) == _normalize_title(hint)]
+        if exact_pages:
+            # Also inspect explicitly year-matched aliases/sequels. A
+            # matching title from the adjacent year must not hide the
+            # exact-year work (e.g. a collection entry omitting "2").
+            pages = [page for page in pages if page in exact_pages or (year and re.search(
+                rf'\({year}\s+(?:film|TV series)', page, re.IGNORECASE))]
+        else:
+            ranked = sorted(pages, key=lambda page: SequenceMatcher(
+                None, hint.casefold(), _strip_disambiguation(page).casefold()).ratio(),
+                reverse=True)[:3]
+            pages = list(dict.fromkeys(pages[:1] + ranked))
+        for page in pages:
+            if page in seen:
+                continue
+            seen.add(page)
+            canonical = _strip_disambiguation(page)
+            if not _validated_match(hint, canonical, year, year):
+                continue
+            qid = _get_wikidata_id(page, source)
+            if not qid:
+                continue
+            types = _get_wikidata_types(qid)
+            wanted = (_SERIES_TYPES if is_series else _FILM_TYPES) \
+                if is_series is not None else _MEDIA_TYPES
+            if not _media_kind_matches(types, wanted):
+                continue
+            entity_year = _get_wikidata_year(qid)
+            if year and (not entity_year or abs(entity_year - year) > 1):
+                release_years = _get_wikidata_release_years(qid)
+                if year not in release_years:
+                    continue
+                entity_year = year
+            canonical = _strip_disambiguation(page)
+            # A one-year release-date difference is already permitted by
+            # the entity check. Keep matching policy consistent with it.
+            if not _validated_match(hint, canonical, year,
+                                    year if year else entity_year):
+                continue
+            if not _plausible_media_title(hint, canonical, year):
+                if not any(_normalize_title(alias) == _normalize_title(hint)
+                           for alias in _get_wikidata_aliases(qid, source)):
+                    continue
+            display = page if source == language else _get_langlink(page, source, language)
+            if not display:
+                display = _get_wikidata_label(qid, language)
+            if not display:
+                continue
+            candidates.append({
+                'title': _strip_disambiguation(display), 'page': page,
+                'page_language': source, 'language': language,
+                'year': entity_year, 'qid': qid, 'hint_year': year,
+                'is_series': is_series, 'cached_at': time.time(),
+            })
+        if candidates:
+            # Prefer an exact year over an adjacent release year. Do not
+            # choose arbitrarily between two different matching entities.
+            exact = [item for item in candidates if year and item['year'] == year]
+            best = exact or candidates
+            same_title = [item for item in best if _normalize_title(
+                _strip_disambiguation(item['page'])) == _normalize_title(hint)]
+            if same_title:
+                best = same_title
+            if len({item['qid'] for item in best}) != 1:
+                _HTTP_STATE.resolution_reason = 'ambiguous title: ' + ', '.join(
+                    item['page'] for item in best)
+                continue
+            result = best[0]
+            with _RESOLUTION_LOCK:
+                cache = load()
+                cache[key] = result
+                try:
+                    _atomic_json_write(cache_path, cache)
+                except OSError:
+                    pass
+            return result
+    return None
+
+
 def enrich_title_via_wiki(meta: Dict, target_lang: str = 'en') -> bool:
-    """Enrich *meta['title']* with the Wikipedia title in *target_lang* (if different).
+    """Confirm *meta['title']* and use its Wikipedia display title.
 
     Works for both movies and TV series/anime.
     Source language is auto-detected from the title characters.
@@ -454,27 +735,31 @@ def enrich_title_via_wiki(meta: Dict, target_lang: str = 'en') -> bool:
         target_lang: Desired language code (e.g. 'en', 'it', 'de'). Default 'en'.
 
     Modifies meta in-place.
-    Returns True if translation was applied, False if not (no page, already same, etc.).
+    Returns True when a matching media entity was confirmed, even if the
+    display title remains the same.
     """
     title = meta.get('title', '') or meta.get('show', '')
     if not title:
         return False
 
-    translated = get_translated_title(
+    resolved = resolve_wiki_title(
         title,
-        target_lang=target_lang,
+        language=target_lang,
         is_series=meta.get('is_series'),
         year=meta.get('year') or None,
     )
-    if translated and translated != title:
-        # Clean up Wikipedia disambiguation suffixes: "(film)", "(film, 2016)", etc.
-        clean = re.sub(
-            r'\s*\(\s*(?:film|pel[íi]cula|movie|tv series|serie|film\s*,\s*\d{4})[^)]*\)\s*$',
-            '', translated, flags=re.IGNORECASE,
-        ).strip()
-        meta['title'] = clean or translated
-        meta['dot_title'] = re.sub(r'\s+', '.', (clean or translated).strip())
+    meta['_wiki_lookup_context'] = [title, target_lang, meta.get('is_series'),
+                                    meta.get('year') or None]
+    if resolved:
+        meta['_wiki_resolution'] = resolved
+        meta['title'] = resolved['title']
+        meta['dot_title'] = re.sub(r'\s+', '.', resolved['title'].strip())
         return True
+
+    if _request_errors():
+        meta['_wiki_error'] = '; '.join(dict.fromkeys(_request_errors()))
+    if _resolution_reason():
+        meta['_wiki_reason'] = _resolution_reason()
 
     return False
 

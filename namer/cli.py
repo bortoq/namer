@@ -22,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
             '  namer -p "{title}.{ext}"                 # simple: just clean name + ext\n'
             '  namer -p "{dot_title}.S{season:02d}E{episode:02d}.{quality}.{ext}"\n'
             '  namer -n                                 # dry-run (preview only)\n'
+            '  namer -b                                 # rename and create a restore script\n'
             '  namer --tmdb-key YOUR_KEY                # enrich with episode titles from TMDB\n'
             '  namer -d /path/to/videos                 # process specific directory\n'
             '  namer -l ru                               # russian episode titles\n'
@@ -55,8 +56,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        '-x', '--allow-title-hint', action='store_true',
+        help='Allow video titles from filenames/directories when providers cannot confirm them',
+    )
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument(
         '-n', '--dry-run', action='store_true',
         help='Preview changes without renaming',
+    )
+    mode.add_argument(
+        '-b', '--backup', nargs='?', const=True, default=False, metavar='NAME',
+        help=('Rename files and create an executable restore script; '
+              'optional NAME sets its path, otherwise choose a name in the target directory'),
     )
     p.add_argument(
         '--tmdb-key', default='',
@@ -145,6 +156,8 @@ def main(argv: list = None) -> int:
             language=args.language,
             language_explicit=_lang_explicit,
             book_searchers=book_searchers,
+            allow_title_hint=args.allow_title_hint,
+            backup=args.backup,
         )
     except KeyboardInterrupt:
         print('\nInterrupted.', file=sys.stderr)

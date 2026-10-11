@@ -21,7 +21,7 @@ os.environ['NAMER_CONFIG'] = os.path.join(_ROOT, 'tests', 'default-config.ini')
 
 
 @pytest.fixture(autouse=True)
-def isolated_cache(tmp_path, monkeypatch):
+def isolated_cache(tmp_path, monkeypatch, request):
     """Every test gets a private XDG_CACHE_HOME — never the user's real cache.
 
     Keeps the suite deterministic: a stale ~/.cache/namer from a manual run
@@ -31,6 +31,18 @@ def isolated_cache(tmp_path, monkeypatch):
     # OCR is an external side effect; provider tests replace it explicitly
     # where needed, while the default suite stays hermetic.
     monkeypatch.setenv('NAMER_DISABLE_OCR', '1')
+    if not request.node.get_closest_marker('live'):
+        import urllib.request
+        from namer import wikipedia
+
+        def offline(*args, **kwargs):
+            raise OSError('network disabled in offline tests')
+
+        monkeypatch.setattr(urllib.request, 'urlopen', offline)
+        monkeypatch.setattr(wikipedia, '_HTTP_CACHE', {})
+        monkeypatch.setattr(wikipedia, '_HTTP_NEXT', {})
+        monkeypatch.setattr(wikipedia, '_HTTP_INTERVAL', 0)
+        wikipedia._HTTP_STATE.errors = []
 
 
 def pytest_configure(config):

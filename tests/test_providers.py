@@ -159,58 +159,60 @@ def test_validated_match_rejects_conflicts():
 # ── wikipedia feed: canonicalize, never echo the hint ────────────────────────
 
 def test_wikipedia_feed_canonicalizes(monkeypatch):
-    monkeypatch.setattr('namer.wikipedia.search_canonical_title',
-                        lambda hint, lang='en': 'Justice League Dark')
-    monkeypatch.setattr('namer.wikipedia.fetch_show_year',
-                        lambda title, lang='en': 2017)
+    monkeypatch.setattr('namer.wikipedia.resolve_wiki_title',
+                        lambda *args: {'title': 'Justice League Dark', 'year': 2017})
     op = wikipedia_feed({'title': 'Justice League Dark DDP', 'year': 2017,
                          'is_series': False}, 'en')
     assert op.values['title'] == 'Justice League Dark'
     assert op.values['year'] == 2017
 
 
-def test_wikipedia_feed_abstains_when_no_page(monkeypatch):
-    monkeypatch.setattr('namer.wikipedia.search_canonical_title',
-                        lambda hint, lang='en': None)
+def test_wikipedia_feed_abstains_when_unresolved(monkeypatch):
+    monkeypatch.setattr('namer.wikipedia.resolve_wiki_title', lambda *args: None)
     op = wikipedia_feed({'title': 'Some Junk HE', 'is_series': False}, 'en')
     assert op.abstain
     assert op.values == {}
 
 
-def test_wikipedia_feed_abstains_on_year_conflict(monkeypatch):
-    """Hint year vs. page year mismatch → the page is the wrong work."""
-    monkeypatch.setattr('namer.wikipedia.search_canonical_title',
-                        lambda hint, lang='en': 'Justice League Dark')
-    monkeypatch.setattr('namer.wikipedia.fetch_show_year',
-                        lambda title, lang='en': 2012)
-    op = wikipedia_feed({'title': 'Justice League Dark DDP', 'year': 2017,
-                         'is_series': False}, 'en')
-    assert op.abstain
-    assert 'title' not in op.values
-
-
-def test_wikipedia_feed_abstains_on_word_mismatch(monkeypatch):
-    monkeypatch.setattr('namer.wikipedia.search_canonical_title',
-                        lambda hint, lang='en': 'Totally Different Movie')
-    monkeypatch.setattr('namer.wikipedia.fetch_show_year',
-                        lambda title, lang='en': None)
-    op = wikipedia_feed({'title': 'Justice League Dark DDP', 'year': 2017,
-                         'is_series': False}, 'en')
-    assert op.abstain
-    assert 'title' not in op.values
-
-
 def test_wikipedia_feed_episode_title_requires_resolution(monkeypatch):
-    monkeypatch.setattr('namer.wikipedia.search_canonical_title',
-                        lambda hint, lang='en': 'Laid-Back Camp')
-    monkeypatch.setattr('namer.wikipedia.fetch_show_year',
-                        lambda title, lang='en': 2018)
+    monkeypatch.setattr('namer.wikipedia.resolve_wiki_title',
+                        lambda *args: {'title': 'Laid-Back Camp', 'year': 2018})
     monkeypatch.setattr('namer.wikipedia.fetch_episode_titles',
                         lambda title, lang='en': {(1, 1): 'Mount Fuji'})
     op = wikipedia_feed({'title': 'Yuru Camp', 'year': 2018, 'is_series': True,
                          'season': 1, 'episode': 1, 'season_assumed': False}, 'en')
     assert op.values['title'] == 'Laid-Back Camp'
     assert op.values['ep_title'] == 'Mount Fuji'
+
+
+def test_wikipedia_feed_reuses_confirmed_entity(monkeypatch):
+    def no_lookup(*args):
+        raise AssertionError('confirmed title must not be searched again')
+    monkeypatch.setattr('namer.wikipedia.resolve_wiki_title', no_lookup)
+    op = wikipedia_feed({'title': 'Baskin', 'year': 2015, 'is_series': False,
+                         '_wiki_resolution': {
+                             'title': 'Baskin', 'language': 'en', 'year': 2015,
+                             'hint_year': 2015, 'is_series': False,
+                         }}, 'en')
+    assert op.values['title'] == 'Baskin'
+
+
+def test_wikipedia_feed_preserves_validated_adjacent_release_year(monkeypatch):
+    monkeypatch.setattr('namer.wikipedia.resolve_wiki_title',
+                        lambda *args: {'title': 'Strange Darling', 'year': 2023})
+    op = wikipedia_feed({'title': 'Strange Darling', 'year': 2024,
+                         'is_series': False}, 'en')
+    assert op.values['year'] == 2024
+
+
+def test_wikipedia_feed_reuses_failed_lookup(monkeypatch):
+    monkeypatch.setattr('namer.wikipedia.resolve_wiki_title', lambda *args:
+                        (_ for _ in ()).throw(AssertionError('duplicate lookup')))
+    op = wikipedia_feed({'title': 'Baskin', 'year': 2015, 'is_series': False,
+                         '_wiki_lookup_context': ['Baskin', 'en', False, 2015],
+                         '_wiki_error': 'en.wikipedia.org: HTTP 429'}, 'en')
+    assert op.abstain
+    assert 'HTTP 429' in op.meta['error']
 
 
 # ── tvmaze feed: vote only when the show was resolved ────────────────────────

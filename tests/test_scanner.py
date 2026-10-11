@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import pytest
 
 from namer.scanner import find_video_files
 
@@ -41,3 +42,11 @@ def test_skip_hidden():
         files = find_video_files(tmp, recursive=True)
         assert len(files) == 1
         assert ".hidden" not in files[0]
+
+
+@pytest.mark.parametrize('recursive', [False, True])
+def test_skip_encoder_files(tmp_path, recursive):
+    for name in ['movie.mkv', '.tmp.ab-av1-encoding.movie.mkv',
+                 'movie_tmp_encode.mkv', 'movie_tmp_encoding.mp4']:
+        (tmp_path / name).write_bytes(b'video')
+    assert find_video_files(str(tmp_path), recursive=recursive) == [str(tmp_path / 'movie.mkv')]

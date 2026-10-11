@@ -200,15 +200,16 @@ _QUALITY_TOKENS = re.compile(
     r'(?:480|576|720|1080|2160)[ip](?:10)?'   # 1080p, 1080i, 1080p10 (10-bit)
     r'|(?:480|576|720|1080|2160)\b'           # bare width: "1080.BluRay" style
     r'|UHD|4K|PROPER|REPACK'   # release status (scene tags), not modifiers
-    r'|[xh]\.?26[45]|HEVC|AV1|VP9|Xvid|Divx|AVC'
+    r'|[xh][. _-]?26[45]|HEVC|AV1|VP9|Xvid|Divx|AVC'
     r'|DD\W?[._\s-]?5[. ]1|DDP?[._\s-]?5[. ]1'
-    r'|AAC5[. ]1|TrueHD|DTS[ -]HD|DTS|FLAC|AAC|AC3|MP3|PCM|Opus'
-    r'|8bit|10bit|8-bit|10-bit'
+    r'|(?:AAC|E?AC3)[. _-]?(?:5[. ]1|2[. ]0)|TrueHD|DTS[ -]HD|DTS|FLAC|AAC|E?AC3|MP3|PCM|Opus'
+    r'|(?:8|10)[. _-]?bits?'
     r'|HDR10?|Dolby[. ]?Vision|DOVI|DV|HLG'
     r'|HDR|SDR'
     r'|x265|h\.265'
     r'|848x480|1280x720|1920x1080|3840x2160|4096x2160'
     r'|Remux'
+    r'|\d{3,4}MB'
     r'|MULTi|DUAL[. ]?AUDIO|(?:5|7)[. ]1(?:[._\s-]?CH)?'
     r'|2[. ]0(?:[._\s-]?CH)?|\d{1,2}CH|(?:Dolby[. ]?)?Atmos'
     r')\b', re.IGNORECASE
@@ -216,7 +217,7 @@ _QUALITY_TOKENS = re.compile(
 
 _SOURCE_TOKENS = re.compile(
     r'\b(?:BluRay|WEB[-_. ]?DL|WEBRip|BDRip|BRRip|HDTV|DVD|DVDR|'
-    r'SCREENER|TELESYNC|TELECINE|WORKPRINT|PDTV|SDTV|TVRip|'
+    r'SCREENER|TELESYNC|TELECINE|WORKPRINT|PDTV|SDTV|TVRip|HDRip|'
     # Streaming-network tags that prefix WEB-DL/WEBRip ("AMZN.WEB-DL",
     # "NF.WEBRip") — they are release metadata, never part of a title.
     r'AMZN|NF|ATVP|DSNP|HMAX|PMP|HULU|iTunes)\b',
@@ -375,6 +376,24 @@ def clean_title(file_name: str) -> str:
     name = re.sub(r'\.(mkv|mp4|avi|m2ts|ts|m4v|mov|wmv|flv|webm|mpg|mpeg|vob|iso)$',
                   '', name, flags=re.IGNORECASE)
 
+    # Torrent-site prefixes are not titles, even when followed by a film
+    # name that happens to match the site's own words.
+    name = re.sub(r'^\s*www\.[\w.-]+\s+-\s*', '', name, flags=re.IGNORECASE)
+
+    collection = re.search(
+        r'\s+-\s+(?:Horror|(?:John Carpenter|Wes Craven)(?:\s+Horror)?)'
+        r'\s+(?=(?:19|20)\d{2}\b)', name, re.IGNORECASE)
+    if collection:
+        # Numbered collection entries put a genre/director label between
+        # the actual title and the release year. Keep sequel numbers.
+        title_part = re.sub(r'^\d{2}\s+', '', name[:collection.start()])
+        name = title_part + ' ' + name[collection.end():]
+
+    # Strip dubbing annotations before detecting the trailing release group.
+    # Otherwise "x264-GROUP_edge-tts_ru" hides the group's boundary.
+    name = re.sub(r'(?<=\S)[\s._-]+edge[\s._-]+tts'
+                  r'(?:[\s._-]+[a-z]{2,3})?\s*$', '', name, flags=re.IGNORECASE)
+
     # Remove season/episode (primary + fallback)
     name = _SERIES_PATTERN.sub('', name)
     name = _EPISODE_FALLBACK.sub('', name)
@@ -398,7 +417,22 @@ def clean_title(file_name: str) -> str:
     # words ("Spider-Man", "X-Men") never match: the token before the hyphen
     # is missing.
     if has_release_markers:
+        # A bracketed tracker suffix must not hide an attached release group.
+        name = re.sub(r'\[(?!\s*(?:19|20)\d{2}\s*\])[^]]*\]', '', name)
         name = _RELEASE_GROUP_GLUED.sub('', name)
+
+        # Language/distributor annotations occur in the release block after
+        # a year. Restrict stripping to that block to preserve real titles
+        # such as "French Kiss" and "The English Patient".
+        years = list(_YEAR_PATTERN.finditer(name))
+        if years:
+            boundary = years[-1].end()
+            suffix = re.sub(
+                r'\b(?:JAPANESE|FRENCH|CHINESE|ITA|ENG|RUS|SUBS|DDP(?!\+)|HC|'
+                r'UMBRELLA|SHOUT|iNTERNAL|INTERNATIONAL[. _-]+VERSION|TINTED)\b',
+                '', name[boundary:], flags=re.IGNORECASE)
+            name = name[:boundary] + suffix
+            name = _RELEASE_GROUP_GLUED.sub('', name)
 
     # Remove only the last year (release year), keep earlier years like "2001"
     years = list(_YEAR_PATTERN.finditer(name))
@@ -422,6 +456,18 @@ def clean_title(file_name: str) -> str:
     # "Extended Family" whose first word coincides with a modifier name).
     if has_release_markers:
         name = MODIFIER_NON_FIRST_PATTERN.sub('', name)
+        # Sanitized multi-edition separators must not become title words.
+        name = re.sub(r'[∕/]+', ' ', name)
+
+    # Edge TTS dubbing annotations are processing metadata.  Match the
+    # compound only at the end, after release tokens/year have been removed;
+    # individual words such as "Edge" can be legitimate movie titles.
+    if has_release_markers:
+        name = re.sub(
+            r'(?<=\S)[\s._-]+edge[\s._-]+tts'
+            r'(?:[\s._-]+[a-z]{2,3})?[\s._()\[\]-]*$',
+            '', name, flags=re.IGNORECASE,
+        )
 
     # Remove bracketed / parenthesized groups
     name = re.sub(r'\[.*?\]', '', name)
@@ -483,6 +529,8 @@ def title_from_path(file_path: str) -> str:
 
     Skips generic/season/numeric directories, collecting the non-generic
     directory levels closest to the file (max 3 levels) as the show name.
+    A directory with release metadata is a complete title boundary: its
+    ancestors describe the collection, not additional title words.
 
     Example: ``/media/video/anime/Angel Beats!/1/episode.mkv``
     1. Skip "1" (numeric season folder)
@@ -513,6 +561,11 @@ def title_from_path(file_path: str) -> str:
             cleaned = clean_title(dirname)
             if len(cleaned) >= 2 and (not parts or cleaned != parts[-1]):
                 parts.append(cleaned)
+            if len(cleaned) >= 2 and (
+                    _YEAR_PATTERN.search(dirname)
+                    or _QUALITY_TOKENS.search(dirname)
+                    or _SOURCE_TOKENS.search(dirname)):
+                break
             parent = os.path.dirname(parent)
             continue
 
@@ -526,6 +579,10 @@ def title_from_path(file_path: str) -> str:
         cleaned = clean_title(dirname)
         if len(cleaned) >= 2:
             parts.append(cleaned)
+            if (_YEAR_PATTERN.search(dirname)
+                    or _QUALITY_TOKENS.search(dirname)
+                    or _SOURCE_TOKENS.search(dirname)):
+                break
         parent = os.path.dirname(parent)
 
     # Deduplicate consecutive identical entries (e.g. parent + subdir with same show name)

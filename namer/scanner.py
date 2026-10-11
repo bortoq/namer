@@ -1,6 +1,7 @@
 """Recursive file scanner for video media files."""
 
 import os
+import re
 from typing import List
 
 from namer.settings import VIDEO_EXTENSIONS
@@ -9,6 +10,13 @@ from namer.settings import VIDEO_EXTENSIONS
 def _skip_dir(name: str) -> bool:
     """Skip hidden directories, __pycache__, etc."""
     return name.startswith('.') or name == '__pycache__'
+
+
+def is_temporary_video(name: str) -> bool:
+    """Exclude hidden files and recognizable encoder work files."""
+    return (name.startswith('.') or bool(re.search(
+        r'(?:^|[._ -])(?:tmp_encode|tmp_encoding)(?:[._ -]|$)',
+        os.path.splitext(name)[0], re.IGNORECASE)))
 
 
 def find_video_files(directory: str, recursive: bool = True) -> List[str]:
@@ -30,6 +38,8 @@ def find_video_files(directory: str, recursive: bool = True) -> List[str]:
             # Filter hidden dirs in-place
             dirs[:] = [d for d in dirs if not _skip_dir(d)]
             for name in names:
+                if is_temporary_video(name):
+                    continue
                 fpath = os.path.join(root, name)
                 if not os.path.isfile(fpath):
                     continue
@@ -38,6 +48,8 @@ def find_video_files(directory: str, recursive: bool = True) -> List[str]:
                     files.append(fpath)
     else:
         for name in os.listdir(directory):
+            if is_temporary_video(name):
+                continue
             fpath = os.path.join(directory, name)
             if os.path.isfile(fpath):
                 ext = os.path.splitext(name)[1].lower()

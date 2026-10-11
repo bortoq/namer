@@ -42,7 +42,7 @@ def _offline_providers(request, monkeypatch):
 
 class TestGenerateNewName:
     def test_movie_default(self):
-        name, meta = generate_new_name("The.Matrix.1999.1080p.BluRay.x265.DTS.mkv")
+        name, meta = generate_new_name("The.Matrix.1999.1080p.BluRay.x265.DTS.mkv", allow_title_hint=True)
         assert "The Matrix" in name
         assert "(1999)" in name
         assert ".mkv" in name
@@ -69,14 +69,14 @@ class TestGenerateNewName:
     def test_custom_pattern(self):
         name, meta = generate_new_name(
             "Show.S01E01.1080p.mkv",
-            pattern="{title}.S{season:02d}E{episode:02d}.{ext}"
+            pattern="{title}.S{season:02d}E{episode:02d}.{ext}", allow_title_hint=True
         )
         assert name == "Show.S01E01.mkv"
 
     def test_movie_custom_pattern(self):
         name, meta = generate_new_name(
             "The.Matrix.1999.mkv",
-            pattern="{title} ({year}).{ext}"
+            pattern="{title} ({year}).{ext}", allow_title_hint=True
         )
         assert name == "The Matrix (1999).mkv"
 
@@ -86,19 +86,19 @@ class TestGenerateNewName:
         '1080' appeared inside the new filename)."""
         name, meta = generate_new_name(
             "Better.Call.Saul.S06E07.Plan.and.Execution.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb.mkv",
-            pattern="{season:02d}.{episode:02d}. {ep_title}.{ext}",
+            pattern="{season:02d}.{episode:02d}. {ep_title}.{ext}", allow_title_hint=True
         )
         assert name == "06.07. Plan and Execution.mkv", f"name={name!r}"
 
         name, meta = generate_new_name(
             "Movie.Name.2020.1080p.AMZN.WEB-DL.x264-GROUP.mkv",
-            pattern="{title} ({year}).{ext}",
+            pattern="{title} ({year}).{ext}", allow_title_hint=True
         )
         assert name == "Movie Name (2020).mkv", f"name={name!r}"
 
         name, meta = generate_new_name(
             "Show.S01E01.Pilot.1080.BluRay.x264-GROUP.mkv",
-            pattern="{season:02d}.{episode:02d}. {ep_title}.{ext}",
+            pattern="{season:02d}.{episode:02d}. {ep_title}.{ext}", allow_title_hint=True
         )
         assert name == "01.01. Pilot.mkv", f"name={name!r}"
 
@@ -205,7 +205,7 @@ class TestEpTitleEnrichment:
         skipped, even though online enrichment sets nothing."""
         name, meta = generate_new_name(
             "Show.S01E01 Pilot.mkv",
-            pattern="{season:02d}.{episode:02d}. {ep_title}.{ext}"
+            pattern="{season:02d}.{episode:02d}. {ep_title}.{ext}", allow_title_hint=True
         )
         # No network → online providers abstain; the fallback keeps the title.
         assert meta['ep_title'] != ""
@@ -216,7 +216,7 @@ class TestEpTitleEnrichment:
         """Dot-N.N.N format: the after-marker text becomes the ep_title."""
         name, meta = generate_new_name(
             "Dir.Show.S01E01 legitimate.mkv",
-            pattern="{ep_title}.{ext}"
+            pattern="{ep_title}.{ext}", allow_title_hint=True
         )
         assert "legitimate" in meta['ep_title']
         assert meta['ep_title'] != ""
@@ -232,6 +232,26 @@ class TestEpTitleEnrichment:
 
 class TestDirectoryHeuristics:
     """Tests for directory-based title/season detection."""
+
+    @pytest.mark.parametrize('basename', [
+        'Baskin (2015).mp4',
+        'Baskin edge tts ru (2015).mkv',
+        'Baskin custom dubbing (2015).mkv',
+    ])
+    def test_baskin_collection_and_dubbing_junk(self, monkeypatch, basename):
+        # Check the hint sent to providers as well as the final offline name.
+        from namer.providers import Feed
+        hints = []
+        monkeypatch.setattr('namer.providers.online_feeds',
+                            lambda meta, *args: hints.append(meta['title']) or [])
+        monkeypatch.setattr('namer.providers.file_feed',
+                            lambda path: Feed('file', {}))
+        path = ('/media/user/data/movies/horror/2sort/'
+                'Baskin (2015) [BluRay] [1080p] [YTS.AM]/' + basename)
+        name, meta = generate_new_name(path, pattern='{title} ({year}).{ext}', allow_title_hint=True)
+        assert hints == ['Baskin']
+        assert meta['title'] == 'Baskin'
+        assert name == 'Baskin (2015).' + basename.rsplit('.', 1)[1]
 
     @pytest.mark.live
     def test_season_from_directory_sxx(self):
@@ -447,7 +467,7 @@ class TestVotingPipeline:
         name, meta = generate_new_name(
             "The.Matrix.1999.mkv",
             season_number=2,
-            pattern="{title} S{season:02d}.{ext}",
+            pattern="{title} S{season:02d}.{ext}", allow_title_hint=True
         )
         assert meta['is_series'] is True, f"is_series={meta['is_series']}"
         assert meta['season'] == 2
@@ -488,7 +508,7 @@ class TestVotingPipeline:
         """A movie with 5.1 audio must stay a movie (no S/E false positive)."""
         self._disable_online(monkeypatch)
         name, meta = generate_new_name(
-            "Movie.2020.1080p.DTS.5.1.mkv", pattern='{title} ({year}).{ext}')
+            "Movie.2020.1080p.DTS.5.1.mkv", pattern='{title} ({year}).{ext}', allow_title_hint=True)
         assert meta['is_series'] is False
         assert name == 'Movie (2020).mkv', f"name={name!r}"
 
@@ -903,7 +923,7 @@ class TestMultiEpisode:
         from namer.core import generate_new_name
         new_name, meta = generate_new_name(
             'Battlestar.Galactica.S01E01.33.mkv',
-            pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
+            pattern='{title}.S{season:02d}E{episode:02d}.{ext}', allow_title_hint=True)
         assert meta.get('_skip') is not True
         assert new_name == 'Battlestar Galactica.S01E01.mkv'
 
@@ -914,7 +934,7 @@ class TestMultiEpisode:
         from namer.core import generate_new_name
         new_name, meta = generate_new_name(
             'Battlestar.Galactica.S01E01-33.mkv',
-            pattern='{title}.S{season:02d}E{episode:02d}.{ext}')
+            pattern='{title}.S{season:02d}E{episode:02d}.{ext}', allow_title_hint=True)
         assert meta.get('_skip') is not True
         assert new_name == 'Battlestar Galactica.S01E01.mkv'
 
@@ -938,7 +958,7 @@ class TestMultiEpisode:
         from namer.core import generate_new_name
         new_name, meta = generate_new_name(
             'Gone Girl (2014).uncut_black.mkv',
-            pattern='{title} ({year}) {mod}.{ext}')
+            pattern='{title} ({year}) {mod}.{ext}', allow_title_hint=True)
         assert meta.get('_skip') is not True
         assert new_name == 'Gone Girl (2014).mkv', f"got {new_name!r}"
 
@@ -974,6 +994,16 @@ class TestProcessDirectoryErrorExit:
         assert renamed == 0
         assert total == 1
         assert errors == 1
+
+    def test_case_only_noop_not_counted_as_rename(self, monkeypatch, tmp_path, capsys):
+        from namer.core import process_directory
+        path = tmp_path / 'movie.mkv'
+        path.write_bytes(b'video')
+        monkeypatch.setattr('namer.core.generate_new_name', lambda *args, **kwargs:
+                            ('Movie.mkv', {'title': 'Movie', 'is_series': False}))
+        assert process_directory(str(tmp_path)) == (0, 1, 0)
+        assert path.exists()
+        assert 'Unchanged: 1' in capsys.readouterr().out
 
     def test_rename_failure_counts_error(self, monkeypatch, tmp_path):
         from namer.core import process_directory
@@ -1057,10 +1087,101 @@ class TestTitleLookupFirst:
         assert name == 'Breaking Bad.S01E01.mkv'
 
     def test_no_online_title_falls_back_to_hint(self):
-        """Offline (feeds abstain): the parsed hint is the fallback title."""
+        """With -x, the parsed hint is the fallback title."""
         name, meta = generate_new_name(
             "Justice.League.Dark.2017.1080p.BluRay.x265-EDGE2020.mkv",
-            pattern='{title} ({year}).{ext}')
+            pattern='{title} ({year}).{ext}', allow_title_hint=True)
         assert meta['title'] == 'Justice League Dark'
         assert meta['_title_source'] == 'hint'
         assert name == 'Justice League Dark (2017).mkv'
+
+
+class TestTitleHintPolicy:
+    @pytest.mark.parametrize('pattern', [
+        '{title} ({year}).{ext}', '{dot_title}.{ext}',
+    ])
+    @pytest.mark.parametrize('allow_hint', [False, True])
+    def test_filename_title_requires_opt_in(self, pattern, allow_hint):
+        original = 'Baskin.2015.1080p.mkv'
+        name, meta = generate_new_name(
+            original, pattern=pattern, allow_title_hint=allow_hint)
+        assert meta['_skip'] is (not allow_hint)
+        if allow_hint:
+            assert name != original
+        else:
+            assert name == original
+            assert 'use -x' in meta['_skip_reason']
+
+    def test_default_disallows_filename_title(self):
+        original = 'Baskin.2015.1080p.mkv'
+        name, meta = generate_new_name(original)
+        assert name == original
+        assert meta['_skip'] is True
+
+    @pytest.mark.parametrize('allow_hint', [False, True])
+    def test_directory_title_remains_a_search_hint(self, monkeypatch, allow_hint):
+        from namer.providers import Feed
+        hints = []
+        monkeypatch.setattr('namer.providers.online_feeds',
+                            lambda meta, *args: hints.append(meta['title']) or [])
+        monkeypatch.setattr('namer.providers.file_feed', lambda path: Feed('file', {}))
+        path = '/media/movies/Baskin (2015)/(2015).mkv'
+        # Empty filename title forces the directory hint.
+        name, meta = generate_new_name(path, allow_title_hint=allow_hint)
+        assert hints == ['Baskin']
+        assert meta['_title_source'] == 'dir'
+        assert meta['_skip'] is (not allow_hint)
+        assert name == ('Baskin (2015).mkv' if allow_hint else '(2015).mkv')
+
+    @pytest.mark.parametrize('allow_hint', [False, True])
+    def test_episode_title_requires_opt_in(self, allow_hint):
+        original = 'Show.S01E01.Pilot.mkv'
+        name, meta = generate_new_name(original, allow_title_hint=allow_hint)
+        assert meta['_skip'] is (not allow_hint)
+        assert name == ('01.01. Pilot.mkv' if allow_hint else original)
+
+    def test_confirmed_episode_title_allowed(self, monkeypatch):
+        from namer.providers import Feed
+        monkeypatch.setattr('namer.providers.tvmaze_feed', lambda meta, lang:
+                            Feed('tvmaze', {'ep_title': 'Pilot'}))
+        name, meta = generate_new_name('Show.S01E01.mkv')
+        assert meta['_skip'] is False
+        assert name == '01.01. Pilot.mkv'
+
+    def test_wiki_translation_allowed(self, monkeypatch):
+        def translate(meta, lang):
+            meta['title'] = 'Baskin'
+            return True
+        monkeypatch.setattr('namer.wikipedia.enrich_title_via_wiki', translate)
+        name, meta = generate_new_name('Баскин.2015.mkv')
+        assert meta['_skip'] is False
+        assert meta['_title_source'] == 'wiki'
+        assert name == 'Baskin (2015).mkv'
+
+    def test_container_title_allowed(self, monkeypatch):
+        from namer.providers import Feed
+        monkeypatch.setattr('namer.providers.file_feed', lambda path:
+                            Feed('file', {'title': 'Baskin'}))
+        name, meta = generate_new_name('Movie.2015.mkv')
+        assert meta['_skip'] is False
+        assert name == 'Baskin (2015).mkv'
+
+    @pytest.mark.parametrize('allow_hint', [False, True])
+    def test_cli_passes_hint_policy_to_workers(self, tmp_path, capsys, allow_hint):
+        from namer.cli import main
+        path = tmp_path / 'Baskin.2015.1080p.mkv'
+        path.write_bytes(b'video')
+        args = ['-n', '-d', str(tmp_path)] + (['-x'] if allow_hint else [])
+        assert main(args) == 0
+        output = capsys.readouterr()
+        assert ('1/1' if allow_hint else '0/1') in output.out
+        if not allow_hint:
+            assert 'use -x' in output.err
+        assert path.exists()
+
+    def test_cli_flag_defaults(self):
+        from namer.cli import build_parser
+        parser = build_parser()
+        assert parser.parse_args([]).allow_title_hint is False
+        assert parser.parse_args(['-x']).allow_title_hint is True
+        assert parser.parse_args(['--allow-title-hint']).allow_title_hint is True

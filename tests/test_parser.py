@@ -60,6 +60,41 @@ class TestExtractYear:
 
 
 class TestCleanTitle:
+    @pytest.mark.parametrize('filename, expected', [
+        ('Cure 1997 1080p BluRay DDP 5 1 10bit H 265-iVy.mkv', 'Cure'),
+        ('His.House.2020.1080p.BluRay.AC35.1.x265.mkv', 'His House'),
+        ('Martyrs.2008.FRENCH.1080p.BluRay.x265-VXT.mp4', 'Martyrs'),
+        ('Suspiria.1977.1080p.Remastered.BluRay.HEVC.EAC3.ITA.ENG-SARTRE.mkv', 'Suspiria'),
+        ('The.Void.2016.WEB-DL.H264-FGT[EtHD].mkv', 'The Void'),
+        ('www.UIndex.org - Solaris 2002 BluRay H 265-iVy.mkv', 'Solaris'),
+        ('The.Empty.Man.2020.720p.WEBRip.800MB.x264-GalaxyRG.mkv', 'The Empty Man'),
+        ('The.Mummy.2026.WEBRip.AAC5.1.10bits.x265-Rapta.mkv', 'The Mummy'),
+        ('French Kiss (1995).mkv', 'French Kiss'),
+        ('The English Patient (1996).mkv', 'The English Patient'),
+        ('01 Wishmaster - Horror 1997 Eng Rus Multi Subs 720p [H264-mp4].mp4', 'Wishmaster'),
+        ('02 Wishmaster 2 Evil Never Dies - Horror 1999 Eng Rus Subs 720p.mp4', 'Wishmaster 2 Evil Never Dies'),
+        ('Prince Of Darkness - John Carpenter Horror 1987 Eng Subs 1080p.mp4', 'Prince Of Darkness'),
+        ('02 The Hills Have Eyes Part II - Wes Craven 1985 Eng Subs 720p.mp4', 'The Hills Have Eyes Part II'),
+        ('Baskin.2015.x264-GROUP_edge-tts_ru.mkv', 'Baskin'),
+    ])
+    def test_collection_release_metadata(self, filename, expected):
+        assert clean_title(filename) == expected
+    @pytest.mark.parametrize('filename', [
+        'Baskin edge tts ru (2015).mkv',
+        'Baskin.2015.edge-tts-ru.mkv',
+        'Baskin (2015) EDGE_TTS.mkv',
+    ])
+    def test_edge_tts_annotation(self, filename):
+        assert clean_title(filename) == 'Baskin'
+
+    @pytest.mark.parametrize('filename, title', [
+        ('Edge (2015).mkv', 'Edge'),
+        ('The Edge (1997).mkv', 'The Edge'),
+        ('Edge TTS (2015).mkv', 'Edge TTS'),
+    ])
+    def test_edge_title_words_preserved(self, filename, title):
+        assert clean_title(filename) == title
+
     def test_simple_movie(self):
         assert clean_title("The.Matrix.1999.1080p.BluRay.x264.mkv") == "The Matrix"
 
@@ -131,6 +166,22 @@ class TestParseFile:
         assert meta['dot_title'] == "Game.of.Thrones"
 
 class TestTitleFromPath:
+    @pytest.mark.parametrize('directory', [
+        'Baskin (2015) [BluRay] [1080p] [YTS.AM]',
+        'Baskin (2015)',
+        'Baskin [1080p]',
+    ])
+    def test_release_directory_stops_at_collection(self, directory):
+        from namer.parser import title_from_path
+        path = f'/media/user/data/movies/horror/2sort/{directory}/Season 1/file.mkv'
+        assert title_from_path(path) == 'Baskin'
+
+    def test_split_title_directories(self):
+        from namer.parser import title_from_path
+        assert title_from_path(
+            '/media/movies/The Summer/Hikaru/Died/Season 1/file.mkv'
+        ) == 'The Summer Hikaru Died'
+
     def test_from_directory(self):
         """Extract clean title from parent directory name."""
         from namer.parser import title_from_path

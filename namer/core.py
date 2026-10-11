@@ -120,6 +120,7 @@ def generate_new_name(
     language_explicit: bool = False,
     progress: Optional[object] = None,
     book_searchers: Optional[list] = None,
+    allow_title_hint: bool = False,
 ) -> Tuple[str, dict]:
     """Generate a new filename for *file_path*.
 
@@ -132,6 +133,8 @@ def generate_new_name(
         season_number: Explicit season number (overrides auto-detection).
                       A positive value also marks the file as a series.
         language: Two-letter language code (e.g. "en", "ru", "de").
+        allow_title_hint: Allow filename/directory titles in the rendered
+                          video name when no provider confirms them.
 
     Pipeline: every provider (filename, dirname, file, wikipedia, tvmaze,
     tmdb) casts a feed; providers are clustered by agreement per field, the
@@ -191,6 +194,12 @@ def generate_new_name(
         return new_base, meta
     from namer.fusion import fuse, Scores
     from namer.voting import update_scores
+    from namer.scanner import is_temporary_video
+
+    if is_temporary_video(os.path.basename(file_path)):
+        return os.path.basename(file_path), {
+            '_skip': True, '_skip_reason': 'temporary encoder file — not renamed',
+        }
 
     if progress is not None:
         progress.set_action('parsing feeds')
@@ -235,6 +244,14 @@ def generate_new_name(
     if not known_title:
         from namer.parser import title_from_path
         dir_title = title_from_path(file_path)
+        if not meta.get('year'):
+            # A file already called "The Bride of Frankenstein.mp4" may
+            # carry its release year only in its enclosing release folder.
+            from namer.parser import extract_year
+            parent = os.path.dirname(os.path.abspath(file_path))
+            dir_year = extract_year(os.path.basename(parent))
+            if dir_year:
+                meta['year'] = dir_year
         if dir_title:
             fn_title = meta.get('title', '') or ''
             fn_lower, dir_lower = fn_title.lower(), dir_title.lower()
@@ -260,7 +277,10 @@ def generate_new_name(
             wiki_ok = enrich_title_via_wiki(meta, language)
             if wiki_ok:
                 meta['_title_enriched'] = True
-                meta['_title_source'] = 'wiki'
+                meta['_title_source'] = 'known' if known_title else 'wiki'
+                if known_title:
+                    meta['title'] = known_title
+                    meta['dot_title'] = re.sub(r'\s+', '.', known_title.strip())
             if not wiki_ok and meta.get("_language_explicit"):
                 source = _detect_language(meta.get("title", "") or "")
                 if source and source != language:
@@ -310,6 +330,9 @@ def generate_new_name(
         progress.set_action('querying providers')
     online = online_feeds(meta, tmdb_key, language) if meta.get('title') else []
     all_feeds = local + online
+    meta['_provider_errors'] = list(dict.fromkeys(
+        [op.meta['error'] for op in online if op.meta.get('error')]
+        + ([meta['_wiki_error']] if meta.get('_wiki_error') else [])))
     if progress is not None:
         progress.set_action('voting')
     v = fuse(all_feeds, scores)
@@ -379,6 +402,29 @@ def generate_new_name(
         meta['_skip'] = True
         meta['_skip_reason'] = 'could not determine episode title (use -sn N or --tmdb-key)'
         return basename, meta
+
+    # Hints still seed lookups.  Without -x they cannot supply display
+    # titles; templates containing only episode numbers remain usable.
+    if not allow_title_hint:
+        hint_fields = []
+        if (meta.get('_title_source') in ('hint', 'dir')
+                and any(_template_uses(template, field)
+                        for field in ('title', 'dot_title'))):
+            hint_fields.append('title')
+        ep_verdict = v.get('ep_title')
+        if (_template_uses(template, 'ep_title')
+                and not (ep_verdict is not None and ep_verdict.usable)):
+            hint_fields.append('ep_title')
+        if hint_fields:
+            meta['_skip'] = True
+            meta['_skip_reason'] = (
+                'unconfirmed ' + ', '.join(hint_fields)
+                + ' from filename/directory (use -x to allow title hints)')
+            if meta.get('_wiki_reason'):
+                meta['_skip_reason'] += '; ' + meta['_wiki_reason']
+            if meta['_provider_errors']:
+                meta['_skip_reason'] += '; provider errors: ' + '; '.join(meta['_provider_errors'])
+            return basename, meta
 
     if progress is not None:
         progress.set_action('rendering')
@@ -489,6 +535,7 @@ def rename_file(
     reserved: set = None,
     quiet: bool = False,
     resolved: Optional[List[str]] = None,
+    restore_script: Optional[object] = None,
 ) -> bool:
     """Rename *file_path* to *new_name* in the same directory.
 
@@ -500,6 +547,8 @@ def rename_file(
     With *quiet*, the per-file success line is suppressed (the scrolling
     progress region already shows the result); the resolved destination
     basename is then appended to *resolved* if given.
+    With *restore_script*, each attempted destination is recorded durably
+    before the move; unsuccessful attempts are removed from the journal.
     Returns True on success (or simulated success in dry-run).
     """
     directory = os.path.dirname(file_path) or '.'
@@ -539,7 +588,18 @@ def rename_file(
     try:
         # Atomic no-clobber move: if the destination appeared between the
         # conflict check above and this call, claim the next free name and retry.
-        while not _rename_no_clobber(file_path, dest):
+        while True:
+            offset = restore_script.prepare(file_path, dest) if restore_script else None
+            try:
+                moved = _rename_no_clobber(file_path, dest)
+            except OSError:
+                if restore_script:
+                    restore_script.cancel(offset)
+                raise
+            if moved:
+                break
+            if restore_script:
+                restore_script.cancel(offset)
             dest_basename = _next_free_name(directory, safe_name, reserved)
             dest = os.path.join(directory, dest_basename)
             if reserved is not None:
@@ -571,12 +631,16 @@ def process_directory(
     language: str = 'en',
     language_explicit: bool = False,
     book_searchers: Optional[list] = None,
+    allow_title_hint: bool = False,
+    backup: bool | str = False,
 ) -> Tuple[int, int, int]:
     """Scan *directory* and rename all supported media files.
 
     Files are analysed in parallel (settings.MAX_CONCURRENT_FILES workers)
     because lookups are network-bound; the rename pass itself stays
     sequential so intra-batch destination conflicts are resolved safely.
+    With *backup*, create a standalone executable restoration script. A
+    string specifies its path; True chooses a free name in *directory*.
     Progress rows (one line per file) are drawn on stderr when the
     terminal supports it; each row appears as soon as the file is
     claimed, is rewritten in place as it advances, and never gets
@@ -594,6 +658,9 @@ def process_directory(
     from namer.progress import Progress
     from namer.scanner import find_video_files
 
+    if dry_run and backup:
+        raise ValueError('backup and dry_run are mutually exclusive')
+
     if not os.path.isdir(directory):
         print(f'error: directory not found: {directory}', file=sys.stderr)
         return 0, 0, 0
@@ -606,7 +673,21 @@ def process_directory(
         files = sorted(files + find_book_files(directory, recursive=recursive))
     except Exception:
         pass
+    # Reserve and initialize the script before any media file can move.
+    restore_script = None
+    if backup:
+        from namer.restore import RestoreScript
+        try:
+            restore_script = RestoreScript(
+                directory, backup if isinstance(backup, str) else '')
+        except OSError as exc:
+            print(f'error: cannot create restore script: {exc}', file=sys.stderr)
+            return 0, len(files), 1
+        print(f'Restore script: {restore_script.path}')
+
     if not files:
+        if restore_script:
+            restore_script.close()
         print('No media files found.')
         return 0, 0, 0
 
@@ -638,6 +719,7 @@ def process_directory(
                 language_explicit=language_explicit,
                 progress=handle,
                 book_searchers=book_searchers,
+                allow_title_hint=allow_title_hint,
             )
             if new_name and new_name != os.path.basename(fpath):
                 handle.set_new_name(new_name)
@@ -662,14 +744,21 @@ def process_directory(
             fut.cancel()
         pool.shutdown(wait=False, cancel_futures=True)
         progress.close()
+        if restore_script:
+            restore_script.close()
         return 0, total, 0
     except Exception:
         progress.close()
+        if restore_script:
+            restore_script.close()
         raise
 
     # ── Pass 2 (sequential): renames; each file's row shows its status ──
     renamed = 0
     errors = 0
+    unchanged = 0
+    skip_counts = {'supplementary': 0, 'unconfirmed titles': 0,
+                   'provider failures': 0, 'other skips': 0}
     skipped = []
     reserved: set = set()  # claimed destinations, avoids intra-batch clashes
     interrupted = False
@@ -715,6 +804,11 @@ def process_directory(
             # Allow missing ep_title — _format_template handles the gap
 
             if skip_reason:
+                category = ('provider failures' if meta.get('_provider_errors')
+                            else 'supplementary' if skip_reason.startswith('supplementary')
+                            else 'unconfirmed titles' if skip_reason.startswith('unconfirmed')
+                            else 'other skips')
+                skip_counts[category] += 1
                 handle.finish('skipped')
                 skipped.append((basename, skip_reason))
                 if verbose:
@@ -725,6 +819,7 @@ def process_directory(
                 continue
 
             if not new_name or new_name == basename:
+                unchanged += 1
                 handle.finish('unchanged')
                 if verbose:
                     for evidence in meta.get('_book_identity', object()).evidence \
@@ -735,8 +830,13 @@ def process_directory(
             handle.unpark('renaming')
             resolved_names: List[str] = []
             success = rename_file(fpath, new_name, dry_run, reserved=reserved,
-                                  quiet=True, resolved=resolved_names)
+                                  quiet=True, resolved=resolved_names,
+                                  restore_script=restore_script)
             if success or dry_run:
+                if not resolved_names:
+                    unchanged += 1
+                    handle.finish('unchanged')
+                    continue
                 renamed += 1
                 if resolved_names:
                     handle.set_new_name(resolved_names[-1])  # show real dest
@@ -753,8 +853,15 @@ def process_directory(
     except Exception:
         progress.close()
         raise
+    finally:
+        if restore_script:
+            restore_script.close()
 
     progress.close()
+
+    print(f'Unchanged: {unchanged}; ' + '; '.join(
+        f'{category}: {count}' for category, count in skip_counts.items())
+          + f'; errors: {errors}.')
 
     if skipped:
         print(f'Skipped {len(skipped)} media file{"s" if len(skipped) != 1 else ""}:',
